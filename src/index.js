@@ -164,9 +164,16 @@ async function callGemini(agentKey, userText) {
 
 // Default LLM provider - can be "claude" or "gemini"
 const DEFAULT_LLM = process.env.DEFAULT_LLM || "claude";
+const GEMINI_AVAILABLE = !!process.env.GOOGLE_API_KEY;
 
 async function callLLM(agentKey, userText, provider = null) {
-  const llmProvider = provider || AGENTS[agentKey].llm || DEFAULT_LLM;
+  let llmProvider = provider || AGENTS[agentKey].llm || DEFAULT_LLM;
+
+  // Fall back to Claude if Gemini requested but no API key
+  if (llmProvider === "gemini" && !GEMINI_AVAILABLE) {
+    console.log(`Gemini requested for ${agentKey} but no API key - falling back to Claude`);
+    llmProvider = "claude";
+  }
 
   if (llmProvider === "gemini") {
     return callGemini(agentKey, userText);
@@ -241,7 +248,9 @@ app.event("app_mention", async ({ event, say, client }) => {
 
   const reply = await callLLM(agentKey, text);
 
-  const llmUsed = agent.llm || DEFAULT_LLM;
+  // Show actual LLM used (accounting for fallback)
+  let llmUsed = agent.llm || DEFAULT_LLM;
+  if (llmUsed === "gemini" && !GEMINI_AVAILABLE) llmUsed = "claude";
   const llmIcon = llmUsed === "gemini" ? "💎" : "🤖";
   await say(`🧠 *${agent.name}* ${llmIcon}\n_${agent.role}_\n\n${reply}`);
 });
