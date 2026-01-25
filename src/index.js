@@ -555,33 +555,72 @@ app.event("app_mention", async ({ event, say, client }) => {
     if (routed) return;
   }
 
-  // Load conversation history
-  const history = loadConversation(channelName);
+  // Show typing indicator
+  const thinkingMsg = await client.chat.postMessage({
+    channel: event.channel,
+    text: `⏳ *${agent.name}* is thinking...`,
+  });
 
-  // Add user message to history
-  let userMessage = text;
-  if (attachments.length > 0) {
-    userMessage += "\n\n[Attachments: " + attachments.map(a => a.description || a.name).join(", ") + "]";
+  try {
+    // Load conversation history
+    const history = loadConversation(channelName);
+
+    // Add user message to history
+    let userMessage = text;
+    if (attachments.length > 0) {
+      userMessage += "\n\n[Attachments: " + attachments.map(a => a.description || a.name).join(", ") + "]";
+    }
+
+    addToConversation(channelName, "user", userMessage, attachments);
+
+    // Get response with full history and attachments (for vision)
+    let reply;
+    try {
+      reply = await callLLM(agentKey, userMessage, history, attachments);
+    } catch (llmError) {
+      // If image processing fails, retry without images
+      if (llmError.message && llmError.message.includes("image")) {
+        console.log("  ⚠️ Image processing failed, retrying without images...");
+        reply = await callLLM(agentKey, userMessage, history, []);
+        reply += "\n\n_(Note: I couldn't process the image. Try a smaller image or different format.)_";
+      } else {
+        throw llmError;
+      }
+    }
+
+    // Save assistant response to history
+    addToConversation(channelName, "assistant", reply);
+
+    // Auto-extract and save key facts (runs in background, don't await)
+    extractAndSaveKeyFacts(agentKey, userMessage, reply).catch(err =>
+      console.error("Fact extraction error:", err.message)
+    );
+
+    // Delete thinking message
+    await client.chat.delete({
+      channel: event.channel,
+      ts: thinkingMsg.ts,
+    });
+
+    // Show actual LLM used (accounting for fallback)
+    let llmUsed = agent.llm || DEFAULT_LLM;
+    if (llmUsed === "gemini" && !GEMINI_AVAILABLE) llmUsed = "claude";
+    const llmIcon = llmUsed === "gemini" ? "💎" : "🤖";
+    await say(`🧠 *${agent.name}* ${llmIcon}\n_${agent.role}_\n\n${reply}`);
+
+  } catch (error) {
+    console.error("Error processing message:", error.message);
+
+    // Delete thinking message
+    try {
+      await client.chat.delete({
+        channel: event.channel,
+        ts: thinkingMsg.ts,
+      });
+    } catch (e) {}
+
+    await say(`❌ *${agent.name}* hit an error: ${error.message}\n\nTry again or rephrase your message.`);
   }
-
-  addToConversation(channelName, "user", userMessage, attachments);
-
-  // Get response with full history and attachments (for vision)
-  const reply = await callLLM(agentKey, userMessage, history, attachments);
-
-  // Save assistant response to history
-  addToConversation(channelName, "assistant", reply);
-
-  // Auto-extract and save key facts (runs in background, don't await)
-  extractAndSaveKeyFacts(agentKey, userMessage, reply).catch(err =>
-    console.error("Fact extraction error:", err.message)
-  );
-
-  // Show actual LLM used (accounting for fallback)
-  let llmUsed = agent.llm || DEFAULT_LLM;
-  if (llmUsed === "gemini" && !GEMINI_AVAILABLE) llmUsed = "claude";
-  const llmIcon = llmUsed === "gemini" ? "💎" : "🤖";
-  await say(`🧠 *${agent.name}* ${llmIcon}\n_${agent.role}_\n\n${reply}`);
 });
 
 /* --------------------------------
