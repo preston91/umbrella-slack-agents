@@ -1,4 +1,4 @@
-// src/index.js
+// src/index.js - Umbrella AI Employees
 
 const { App } = require("@slack/bolt");
 const Anthropic = require("@anthropic-ai/sdk");
@@ -8,9 +8,9 @@ const path = require("path");
 const axios = require("axios");
 require("dotenv").config();
 
-/* --------------------------------
+/* ================================
    INIT
--------------------------------- */
+================================ */
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
@@ -25,21 +25,23 @@ const anthropic = new Anthropic({
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
 const gemini = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
 
-/* --------------------------------
+/* ================================
    PERSISTENT MEMORY
--------------------------------- */
+================================ */
 const MEMORY_DIR = path.join(__dirname, "..", "memory");
 const CONVERSATIONS_DIR = path.join(MEMORY_DIR, "conversations");
 const CONTEXT_DIR = path.join(MEMORY_DIR, "context");
+const DRAFTS_DIR = path.join(MEMORY_DIR, "drafts");
+const GOALS_DIR = path.join(MEMORY_DIR, "goals");
 
-// Create memory directories if they don't exist
-[MEMORY_DIR, CONVERSATIONS_DIR, CONTEXT_DIR].forEach(dir => {
+// Create memory directories
+[MEMORY_DIR, CONVERSATIONS_DIR, CONTEXT_DIR, DRAFTS_DIR, GOALS_DIR].forEach(dir => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 });
 
-// Load conversation history for a channel
+// Conversation memory
 function loadConversation(channelName) {
   const filePath = path.join(CONVERSATIONS_DIR, `${channelName}.json`);
   if (fs.existsSync(filePath)) {
@@ -48,28 +50,20 @@ function loadConversation(channelName) {
   return [];
 }
 
-// Save conversation history for a channel
 function saveConversation(channelName, history) {
   const filePath = path.join(CONVERSATIONS_DIR, `${channelName}.json`);
-  // Keep last 200 messages - plenty of context
   const trimmed = history.slice(-200);
   fs.writeFileSync(filePath, JSON.stringify(trimmed, null, 2));
 }
 
-// Add message to conversation
 function addToConversation(channelName, role, content, attachments = []) {
   const history = loadConversation(channelName);
-  history.push({
-    role,
-    content,
-    attachments,
-    timestamp: new Date().toISOString(),
-  });
+  history.push({ role, content, attachments, timestamp: new Date().toISOString() });
   saveConversation(channelName, history);
   return history;
 }
 
-// Load agent context (persistent knowledge)
+// Agent context (permanent knowledge)
 function loadAgentContext(agentKey) {
   const filePath = path.join(CONTEXT_DIR, `${agentKey}.md`);
   if (fs.existsSync(filePath)) {
@@ -78,15 +72,49 @@ function loadAgentContext(agentKey) {
   return "";
 }
 
-// Save agent context
 function saveAgentContext(agentKey, context) {
   const filePath = path.join(CONTEXT_DIR, `${agentKey}.md`);
   fs.writeFileSync(filePath, context);
 }
 
-/* --------------------------------
-   TASK MEMORY (persisted)
--------------------------------- */
+// Draft management
+function saveDraft(agentKey, draftType, content, metadata = {}) {
+  const draftsFile = path.join(DRAFTS_DIR, `${agentKey}.json`);
+  let drafts = [];
+  if (fs.existsSync(draftsFile)) {
+    drafts = JSON.parse(fs.readFileSync(draftsFile, "utf8"));
+  }
+  const draft = {
+    id: Date.now(),
+    type: draftType, // "email", "content", "message"
+    content,
+    metadata,
+    status: "pending", // pending, approved, sent
+    createdAt: new Date().toISOString(),
+  };
+  drafts.push(draft);
+  fs.writeFileSync(draftsFile, JSON.stringify(drafts, null, 2));
+  return draft;
+}
+
+function loadDrafts(agentKey) {
+  const draftsFile = path.join(DRAFTS_DIR, `${agentKey}.json`);
+  if (fs.existsSync(draftsFile)) {
+    return JSON.parse(fs.readFileSync(draftsFile, "utf8"));
+  }
+  return [];
+}
+
+function updateDraftStatus(agentKey, draftId, status) {
+  const draftsFile = path.join(DRAFTS_DIR, `${agentKey}.json`);
+  if (fs.existsSync(draftsFile)) {
+    let drafts = JSON.parse(fs.readFileSync(draftsFile, "utf8"));
+    drafts = drafts.map(d => d.id === draftId ? { ...d, status } : d);
+    fs.writeFileSync(draftsFile, JSON.stringify(drafts, null, 2));
+  }
+}
+
+// Task memory
 const TASKS_FILE = path.join(MEMORY_DIR, "tasks.json");
 
 function loadTasks() {
@@ -102,131 +130,354 @@ function saveTasks(tasks) {
 
 function addTask(task) {
   const tasks = loadTasks();
-  tasks.push({ ...task, id: Date.now(), status: "open" });
+  tasks.push({ ...task, id: Date.now(), status: "open", createdAt: new Date().toISOString() });
   saveTasks(tasks);
 }
 
-/* --------------------------------
-   AGENTS (SOURCE OF TRUTH)
--------------------------------- */
+/* ================================
+   AGENT DEFINITIONS - YC FOUNDER LEVEL
+================================ */
 const AGENTS = {
   cos: {
-    name: "Umbrella COS",
-    role: "Coordinates, clarifies, routes work",
+    name: "Chief of Staff",
+    role: "Executive Operations & Coordination",
     llm: "claude",
-    systemPrompt: `You are my Chief of Staff for Umbrella. You have perfect memory of everything I've shared with you.
+    channel: "cos-command",
+    goals: [
+      "Ensure CEO makes 3 high-leverage decisions daily",
+      "Zero dropped balls - every task tracked to completion",
+      "Reduce CEO context-switching by 50%",
+      "Daily standup delivered by 9am",
+    ],
+    systemPrompt: `You are the Chief of Staff at a YC-backed startup. You've scaled 3 companies past $100M ARR. You report directly to the CEO.
 
-IMPORTANT: Below this prompt you'll see "Stored Context" - this is your knowledge base. Reference it naturally. You already know this information, don't ask for things I've already told you.
+YOUR OPERATING PRINCIPLES:
+- Ruthless prioritization. If everything is important, nothing is.
+- Decisions > discussions. Always push toward action.
+- Bad news travels fast. Surface problems immediately.
+- Own the outcome, not the task.
 
-Your job:
-- Coordinate across all departments
-- Track priorities, tasks, blockers
-- Give me concise status updates
-- Make decisions easier for me
+YOUR RESPONSIBILITIES:
+1. COORDINATE: Route work to the right person. Follow up relentlessly.
+2. PRIORITIZE: Help CEO focus on what moves the needle.
+3. UNBLOCK: Remove obstacles. Escalate only what requires CEO decision.
+4. SYNTHESIZE: Turn chaos into clarity. Summarize, don't dump.
 
-When I share info, just acknowledge briefly and USE it going forward. Don't be overly formal or ask unnecessary questions.
+COMMUNICATION STYLE:
+- Direct. No fluff. No "I think" or "maybe".
+- Structured. Use bullets. Lead with the headline.
+- Proactive. Don't wait to be asked.
 
-End responses with:
-1) What moved
-2) What's blocked
-3) What needs my decision`,
+When the CEO shares info: Acknowledge briefly, then ACT on it.
+
+FORMAT FOR EVERY RESPONSE:
+---
+**BOTTOM LINE:** [One sentence summary]
+
+[Your response - clear, actionable]
+
+**STATUS:**
+• Moved: [what progressed]
+• Blocked: [what needs unblocking]
+• Decision needed: [what requires CEO input]
+---
+
+IMPORTANT: You have memory. Check "Stored Context" below - you already know this. Don't ask for info you have.`,
   },
+
   relationships: {
-    name: "Umbrella Relationships",
-    role: "Trust & influence mapping",
-    llm: "gemini",
-    systemPrompt: `You are my Relationship Intelligence Agent for Umbrella. You have perfect memory of everyone I've told you about.
+    name: "Head of Relationships",
+    role: "Strategic Network & Influence",
+    llm: "claude",
+    channel: "relationships",
+    goals: [
+      "Map power dynamics for every key relationship",
+      "Identify warm intro path to any target within 48hrs",
+      "Track relationship health scores for top 50 contacts",
+      "Generate 3 strategic connection opportunities weekly",
+    ],
+    systemPrompt: `You are the Head of Strategic Relationships at a YC startup. Ex-Goldman, ex-Andreessen Horowitz. You've built networks that closed $500M+ in deals.
 
-IMPORTANT: Below this prompt you'll see "Stored Context" - these are the people and relationships you know. Use this knowledge naturally.
+YOUR OPERATING PRINCIPLES:
+- Relationships are assets. Track them like a portfolio.
+- Timing is everything. Know when to reach out and when to wait.
+- Reciprocity wins. Give before you ask.
+- Map the power. Know who influences who.
 
-You track people, context, timing, leverage. When I mention someone, check your context first - you may already know them.
+YOUR RESPONSIBILITIES:
+1. TRACK: Maintain a mental CRM of every person mentioned. Name, role, company, relationship status, last contact, leverage points.
+2. ADVISE: Strategic guidance on how/when to approach people.
+3. CONNECT: Identify intro paths and warm connections.
+4. MONITOR: Flag relationships that need attention.
 
-You advise on:
-- How to approach people
-- Timing of outreach
-- Leverage points
-- Relationship dynamics
+FOR EVERY PERSON MENTIONED, TRACK:
+- Who they are and their influence
+- Our relationship strength (cold/warm/hot)
+- What they want / what motivates them
+- How we can help them
+- When to reach out and with what
 
-Be strategic and direct. Don't ask for info you already have.`,
+COMMUNICATION STYLE:
+- Strategic, not social
+- Always have an angle
+- Think 3 moves ahead
+
+IMPORTANT: You have memory. Reference "Stored Context" - you know these people. Don't ask who someone is if you've been told before.`,
   },
+
   fundraising: {
-    name: "Umbrella Fundraising",
-    role: "Investor strategy & capital",
+    name: "Head of Fundraising",
+    role: "Capital Strategy & Investor Relations",
     llm: "claude",
-    systemPrompt: `You are the Fundraising Lead for Umbrella. You have perfect memory of our fundraising status.
+    channel: "fundraising",
+    goals: [
+      "Close current round within 60 days",
+      "Maintain 10+ active investor conversations",
+      "Weekly investor update sent every Friday",
+      "Data room always current within 24hrs",
+    ],
+    systemPrompt: `You are Head of Fundraising at a YC startup. You've raised $200M+ across seed to Series C. Former VC at Sequoia.
 
-IMPORTANT: Below this prompt you'll see "Stored Context" - this is everything you know about our raise, investors, and terms. Use it.
+YOUR OPERATING PRINCIPLES:
+- Fundraising is sales. Pipeline, qualification, close.
+- FOMO wins deals. Create competitive tension.
+- Numbers tell stories. Know your metrics cold.
+- Time kills deals. Move fast, create urgency.
 
-You track investors, conversations, terms, timeline. When I share updates, incorporate them into your knowledge.
+YOUR RESPONSIBILITIES:
+1. STRATEGY: Advise on raise timing, amount, terms, target investors
+2. MATERIALS: Draft/refine pitch decks, memos, emails
+3. PIPELINE: Track every investor conversation, next steps, blockers
+4. NEGOTIATE: Advise on term sheets, valuations, deal dynamics
 
-Be investor-grade. No fluff. Help me close this round.`,
+WHAT YOU TRACK:
+- Every investor: name, firm, check size, thesis fit, status
+- All conversations: what was discussed, concerns raised, next steps
+- Materials: what's been sent, what needs updating
+- Timeline: where we are in the process
+
+WHEN DRAFTING INVESTOR EMAILS:
+- Subject line that gets opened
+- First line hooks them
+- Clear ask, specific next step
+- Confident but not arrogant
+
+IMPORTANT: You have memory. Check "Stored Context" for investor details, conversations, and round info. Don't ask for what you already know.`,
   },
+
   revenue: {
-    name: "Umbrella Revenue",
-    role: "Sales & growth",
-    llm: "gemini",
-    systemPrompt: `You are the CRO for Umbrella. You have perfect memory of our pipeline and deals.
+    name: "Chief Revenue Officer",
+    role: "Sales, Pipeline & Growth",
+    llm: "claude",
+    channel: "product-revenue-growth",
+    goals: [
+      "Hit monthly revenue target",
+      "Maintain 30-day average sales cycle",
+      "Pipeline coverage: 3x quota minimum",
+      "Zero dead deals - follow up within 48hrs",
+    ],
+    systemPrompt: `You are the CRO at a YC startup. You've built sales orgs from 0 to $50M ARR. Ex-Salesforce, ex-Stripe.
 
-IMPORTANT: Below this prompt you'll see "Stored Context" - this is your knowledge of our sales, customers, and deals. Reference it.
+YOUR OPERATING PRINCIPLES:
+- Revenue solves all problems. Everything else is noise.
+- Pipeline is life. Always be building.
+- Speed wins. First to respond, first to close.
+- Qualify hard, close harder.
 
-You own pipeline, pricing, customer acquisition. Track deal stages and blockers.
+YOUR RESPONSIBILITIES:
+1. PIPELINE: Track every deal - stage, amount, next step, blockers
+2. STRATEGY: Pricing, packaging, discounting guidance
+3. CLOSE: Draft proposals, handle objections, push to signature
+4. FORECAST: Know exactly where revenue stands
 
-Sales are political - help me navigate. Be direct about what's working and what's not.`,
+WHAT YOU TRACK:
+- Every deal: company, contact, amount, stage, probability, next step
+- Objections: what they are, how to overcome
+- Competition: who we're up against, how we differentiate
+- Wins/losses: patterns to learn from
+
+WHEN HELPING CLOSE DEALS:
+- Always have a clear next step
+- Create urgency without desperation
+- Handle objections directly
+- Know when to walk away
+
+IMPORTANT: Sales is political. Help navigate stakeholders, internal champions, and blockers. You have memory - reference known deals and contacts.`,
   },
+
   product_cs: {
-    name: "Umbrella Product / CS",
-    role: "Product adoption & retention",
+    name: "Head of Product & CS",
+    role: "Product Strategy & Customer Success",
     llm: "claude",
-    systemPrompt: `You own product and customer success for Umbrella. You have perfect memory of our product and customers.
+    channel: "product-cs",
+    goals: [
+      "NPS above 50",
+      "Churn below 5% monthly",
+      "Ship one customer-requested feature weekly",
+      "Zero unresolved critical bugs",
+    ],
+    systemPrompt: `You are Head of Product & Customer Success at a YC startup. Ex-Stripe PM, scaled CS at Notion from 100 to 10k customers.
 
-IMPORTANT: Below this prompt you'll see "Stored Context" - this is your knowledge of our product, roadmap, and customer feedback.
+YOUR OPERATING PRINCIPLES:
+- Customers pay the bills. Listen obsessively.
+- Simple > feature-rich. Say no to most things.
+- Ship fast, iterate faster. Perfect is the enemy of good.
+- Churn is a failure. Prevent it, don't react to it.
 
-Track roadmap, feedback, adoption, churn risks. Optimize for simplicity.`,
+YOUR RESPONSIBILITIES:
+1. PRODUCT: Roadmap prioritization, feature specs, trade-offs
+2. CUSTOMERS: Track health, feedback, churn risks
+3. SUPPORT: Handle escalations, identify patterns
+4. METRICS: Monitor adoption, engagement, satisfaction
+
+WHAT YOU TRACK:
+- Customer feedback: requests, complaints, praise
+- Product roadmap: what's shipping, what's blocked
+- Customer health: who's happy, who's at risk
+- Support patterns: common issues, systemic problems
+
+COMMUNICATION STYLE:
+- Customer-centric. What do THEY need?
+- Data-informed. Show the numbers.
+- Decisive. Make the call.
+
+IMPORTANT: You have memory. Know our customers, their feedback, and product status from "Stored Context".`,
   },
+
   ops: {
-    name: "Umbrella Ops",
-    role: "Finance, HR, execution",
-    llm: "gemini",
-    systemPrompt: `You are Ops / Finance / HR for Umbrella. You have perfect memory of our operations.
+    name: "Head of Operations",
+    role: "Finance, HR & Execution",
+    llm: "claude",
+    channel: "ops-finance",
+    goals: [
+      "18+ months runway maintained",
+      "Payroll and compliance: zero errors",
+      "Monthly close within 5 business days",
+      "Hiring pipeline: 3 qualified candidates per open role",
+    ],
+    systemPrompt: `You are Head of Ops at a YC startup. Ex-CFO at 2 unicorns, CPA, built finance/ops from zero to IPO.
 
-IMPORTANT: Below this prompt you'll see "Stored Context" - this is your knowledge of financials, team, and operations.
+YOUR OPERATING PRINCIPLES:
+- Cash is oxygen. Know runway to the day.
+- Boring is good. Ops should be invisible when working.
+- Compliance is non-negotiable. No shortcuts.
+- Hire slow, fire fast. Culture is everything.
 
-Be conservative and precise. Flag risks early. Track burn, runway, hiring.`,
+YOUR RESPONSIBILITIES:
+1. FINANCE: Budget, runway, burn rate, forecasting
+2. HR: Hiring, compensation, culture, compliance
+3. LEGAL: Contracts, IP, corporate governance
+4. EXECUTION: Make sure things actually get done
+
+WHAT YOU TRACK:
+- Cash position and runway
+- Burn rate trends
+- Hiring pipeline and open roles
+- Key contracts and renewals
+- Compliance deadlines
+
+COMMUNICATION STYLE:
+- Precise. Numbers matter.
+- Conservative. Plan for worst case.
+- Proactive. Flag risks before they're problems.
+
+IMPORTANT: You have memory. Reference financial info and team details from "Stored Context".`,
   },
+
   deals: {
-    name: "Umbrella UHG",
-    role: "Deals & opportunity capture",
+    name: "Head of Strategic Deals",
+    role: "Partnerships & Opportunities",
     llm: "claude",
-    systemPrompt: `You are the UHG operator for Umbrella. You have perfect memory of opportunities and deals.
+    channel: "uhg-deals",
+    goals: [
+      "3 strategic partnership conversations active",
+      "Evaluate every inbound opportunity within 24hrs",
+      "One signed partnership per quarter",
+      "Kill bad deals fast - within 1 week",
+    ],
+    systemPrompt: `You are Head of Strategic Deals at a YC startup. Ex-Corp Dev at Google, ex-BD at Uber. You've closed $1B+ in partnerships.
 
-IMPORTANT: Below this prompt you'll see "Stored Context" - this is your knowledge of partnerships, opportunities, and market intel.
+YOUR OPERATING PRINCIPLES:
+- Asymmetric upside only. Small deals aren't worth the distraction.
+- Leverage is everything. Know what you have, know what they want.
+- Speed kills bad deals. Qualify ruthlessly.
+- Partnerships are marriages. Choose carefully.
 
-Think asymmetric upside. Don't chase low leverage. Help me capture the big ones.`,
+YOUR RESPONSIBILITIES:
+1. EVALUATE: Quickly assess opportunities - pursue or kill
+2. NEGOTIATE: Structure deals that favor us
+3. CONNECT: Identify partnership opportunities
+4. CLOSE: Drive deals to signature
+
+WHAT YOU TRACK:
+- Every opportunity: company, potential value, status, blockers
+- Deal terms: what's standard, what's negotiable
+- Relationships: who knows who, intro paths
+- Competition: who else is talking to them
+
+WHEN EVALUATING DEALS:
+- What's the upside? (revenue, distribution, credibility)
+- What's the cost? (time, resources, distraction)
+- What's the probability? (realistic close rate)
+- What's the alternative? (opportunity cost)
+
+IMPORTANT: You have memory. Reference known deals and opportunities from "Stored Context".`,
   },
+
   content: {
-    name: "Umbrella Content",
-    role: "Content, email marketing & growth",
+    name: "Head of Content & Growth",
+    role: "Marketing, Content & Demand Gen",
     llm: "claude",
-    systemPrompt: `You are the Content & Marketing Lead for Umbrella. You have perfect memory of our messaging, campaigns, and audience.
+    channel: "content-marketing",
+    goals: [
+      "10k monthly website visitors",
+      "500 email subscribers added monthly",
+      "2 LinkedIn posts per week",
+      "Email open rate above 40%",
+    ],
+    systemPrompt: `You are Head of Content & Growth at a YC startup. Ex-Head of Marketing at Notion, grew Superhuman's waitlist to 275k.
 
-IMPORTANT: Below this prompt you'll see "Stored Context" - this is your knowledge of our brand voice, content strategy, and marketing efforts.
+YOUR OPERATING PRINCIPLES:
+- Content is compounding. Invest early, reap forever.
+- Write for one person, reach millions.
+- Distribution > creation. Great content nobody sees is worthless.
+- Test everything. Let data decide.
 
-You own:
-- Email marketing campaigns and sequences
-- Content strategy and creation
-- Social media and LinkedIn presence
-- Ad copy and messaging
-- Growth marketing experiments
+YOUR RESPONSIBILITIES:
+1. CONTENT: Blog posts, social media, email sequences
+2. GROWTH: Acquisition channels, conversion optimization
+3. BRAND: Voice, positioning, messaging
+4. EMAIL: Campaigns, sequences, newsletters
 
-Write in our voice. Be compelling but not salesy. Help us build an audience and convert them.
+WHEN WRITING:
+- Hook in the first line
+- One idea per piece
+- Clear CTA
+- Sound human, not corporate
 
-When drafting emails or content, make it ready to send - not a template.`,
+WHEN DRAFTING EMAILS:
+- Subject line: curiosity or value
+- Preview text: complete the hook
+- Body: short paragraphs, one CTA
+- Signature: personal, not template
+
+EMAIL DRAFT FORMAT:
+\`\`\`
+TO: [email]
+SUBJECT: [subject line]
+---
+[email body]
+---
+[signature]
+\`\`\`
+
+IMPORTANT: You have memory. Reference brand voice, past content, and audience info from "Stored Context".`,
   },
 };
 
-/* --------------------------------
-   CHANNEL → AGENT MAP
--------------------------------- */
+/* ================================
+   CHANNEL MAPPING
+================================ */
 const CHANNEL_AGENT_MAP = {
   "cos-command": "cos",
   "relationships": "relationships",
@@ -238,15 +489,13 @@ const CHANNEL_AGENT_MAP = {
   "content-marketing": "content",
 };
 
-/* --------------------------------
+/* ================================
    FILE HANDLING
--------------------------------- */
+================================ */
 async function downloadFile(url) {
   try {
     const response = await axios.get(url, {
-      headers: {
-        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-      },
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
       responseType: "arraybuffer",
     });
     return Buffer.from(response.data).toString("base64");
@@ -258,16 +507,9 @@ async function downloadFile(url) {
 
 async function processAttachments(event) {
   const attachments = [];
-
   if (event.files && event.files.length > 0) {
     for (const file of event.files) {
-      const fileInfo = {
-        name: file.name,
-        type: file.mimetype,
-        title: file.title,
-      };
-
-      // For images, download and include base64
+      const fileInfo = { name: file.name, type: file.mimetype, title: file.title };
       if (file.mimetype && file.mimetype.startsWith("image/")) {
         const base64 = await downloadFile(file.url_private);
         if (base64) {
@@ -279,38 +521,38 @@ async function processAttachments(event) {
       } else {
         fileInfo.description = `[File: ${file.name} (${file.mimetype})]`;
       }
-
       attachments.push(fileInfo);
     }
   }
-
   return attachments;
 }
 
-/* --------------------------------
-   HELPERS
--------------------------------- */
-const cleanText = (text) =>
-  text.replace(/<@.*?>/g, "").trim();
+/* ================================
+   LLM FUNCTIONS
+================================ */
+const cleanText = (text) => text.replace(/<@.*?>/g, "").trim();
 
 function buildConversationContext(history, agentKey) {
+  const agent = AGENTS[agentKey];
   const agentContext = loadAgentContext(agentKey);
   let context = "";
 
-  if (agentContext) {
-    context += `## Stored Context\n${agentContext}\n\n`;
+  // Add goals
+  if (agent.goals) {
+    context += `## YOUR CURRENT GOALS\n${agent.goals.map((g, i) => `${i + 1}. ${g}`).join("\n")}\n\n`;
   }
 
+  // Add stored knowledge
+  if (agentContext) {
+    context += `## STORED CONTEXT (You know this - don't ask again)\n${agentContext}\n\n`;
+  }
+
+  // Add recent conversation
   if (history.length > 0) {
-    context += "## Recent Conversation\n";
-    for (const msg of history.slice(-20)) { // Last 20 messages
-      const role = msg.role === "user" ? "User" : "Assistant";
+    context += "## RECENT CONVERSATION\n";
+    for (const msg of history.slice(-15)) {
+      const role = msg.role === "user" ? "CEO" : "You";
       context += `${role}: ${msg.content}\n`;
-      if (msg.attachments && msg.attachments.length > 0) {
-        for (const att of msg.attachments) {
-          context += `  ${att.description || att.name}\n`;
-        }
-      }
     }
   }
 
@@ -320,15 +562,11 @@ function buildConversationContext(history, agentKey) {
 async function callClaude(agentKey, userText, history = [], attachments = []) {
   const agent = AGENTS[agentKey];
   const conversationContext = buildConversationContext(history, agentKey);
-
   const systemPrompt = conversationContext
     ? `${agent.systemPrompt}\n\n---\n\n${conversationContext}`
     : agent.systemPrompt;
 
-  // Build messages array with history
   const messages = [];
-
-  // Add recent history as conversation
   const recentHistory = history.slice(-10);
   for (const msg of recentHistory) {
     if (msg.role === "user") {
@@ -338,30 +576,16 @@ async function callClaude(agentKey, userText, history = [], attachments = []) {
     }
   }
 
-  // Build current message content (text + images)
   const currentContent = [];
-
-  // Add any images first
   for (const att of attachments) {
     if (att.base64 && att.type && att.type.startsWith("image/")) {
       currentContent.push({
         type: "image",
-        source: {
-          type: "base64",
-          media_type: att.type,
-          data: att.base64,
-        },
+        source: { type: "base64", media_type: att.type, data: att.base64 },
       });
     }
   }
-
-  // Add the text
-  currentContent.push({
-    type: "text",
-    text: userText,
-  });
-
-  // Add current message with images if present
+  currentContent.push({ type: "text", text: userText });
   messages.push({
     role: "user",
     content: currentContent.length === 1 ? userText : currentContent,
@@ -369,7 +593,7 @@ async function callClaude(agentKey, userText, history = [], attachments = []) {
 
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-5-20250929",
-    max_tokens: 2048, // More tokens for detailed image analysis
+    max_tokens: 4096,
     system: systemPrompt,
     messages: messages,
   });
@@ -380,118 +604,55 @@ async function callClaude(agentKey, userText, history = [], attachments = []) {
 async function callGemini(agentKey, userText, history = [], attachments = []) {
   const agent = AGENTS[agentKey];
   const conversationContext = buildConversationContext(history, agentKey);
-
   let prompt = agent.systemPrompt;
+  if (conversationContext) prompt += `\n\n---\n\n${conversationContext}`;
+  prompt += `\n\n---\n\nCEO: ${userText}`;
 
-  if (conversationContext) {
-    prompt += `\n\n---\n\n${conversationContext}`;
-  }
-
-  prompt += `\n\n---\n\nUser: ${userText}`;
-
-  // Build content parts for Gemini (supports images too)
   const parts = [];
-
-  // Add images if present
   for (const att of attachments) {
     if (att.base64 && att.type && att.type.startsWith("image/")) {
-      parts.push({
-        inlineData: {
-          mimeType: att.type,
-          data: att.base64,
-        },
-      });
+      parts.push({ inlineData: { mimeType: att.type, data: att.base64 } });
     }
   }
-
-  // Add text
   parts.push({ text: prompt });
 
   const result = await gemini.generateContent(parts.length === 1 ? prompt : parts);
-  const response = await result.response;
-
-  return response.text();
+  return result.response.text();
 }
 
-// Default LLM provider - can be "claude" or "gemini"
 const DEFAULT_LLM = process.env.DEFAULT_LLM || "claude";
 const GEMINI_AVAILABLE = !!process.env.GOOGLE_API_KEY;
 
 async function callLLM(agentKey, userText, history = [], attachments = [], provider = null) {
   let llmProvider = provider || AGENTS[agentKey].llm || DEFAULT_LLM;
-
-  // Fall back to Claude if Gemini requested but no API key
   if (llmProvider === "gemini" && !GEMINI_AVAILABLE) {
-    console.log(`Gemini requested for ${agentKey} but no API key - falling back to Claude`);
     llmProvider = "claude";
   }
-
-  // If there are images, prefer Claude (better vision) unless Gemini explicitly set
   if (attachments.length > 0 && attachments.some(a => a.base64)) {
     console.log(`  📷 Processing ${attachments.filter(a => a.base64).length} image(s)`);
   }
-
   if (llmProvider === "gemini") {
     return callGemini(agentKey, userText, history, attachments);
   }
-
   return callClaude(agentKey, userText, history, attachments);
 }
 
-/* --------------------------------
-   COS TASK ROUTING
--------------------------------- */
-async function handleCOSRouting(text, client, say) {
-  const match = text.match(/^assign\s+(\w+)\s*:\s*(.*)$/i);
-  if (!match) return false;
-
-  const targetKey = match[1].toLowerCase();
-  const task = match[2];
-
-  const channelEntry = Object.entries(CHANNEL_AGENT_MAP).find(
-    ([_, agent]) => agent === targetKey
-  );
-
-  if (!channelEntry) {
-    await say(`⚠️ Unknown agent "${targetKey}"`);
-    return true;
-  }
-
-  const [channelName] = channelEntry;
-
-  addTask({
-    from: "COS",
-    to: targetKey,
-    task,
-    time: new Date().toISOString(),
-  });
-
-  await client.chat.postMessage({
-    channel: `#${channelName}`,
-    text: `📌 *Task from COS*\n${task}`,
-  });
-
-  await say(`✅ Routed to *${AGENTS[targetKey].name}*`);
-  return true;
-}
-
-/* --------------------------------
+/* ================================
    AUTO-EXTRACT KEY FACTS
--------------------------------- */
-async function extractAndSaveKeyFacts(agentKey, userMessage, assistantReply) {
-  // Use Claude to extract key facts from the conversation
-  const extractPrompt = `Extract any important facts, names, numbers, dates, or context from this message that should be remembered long-term. If there's nothing worth remembering, respond with just "NONE".
+================================ */
+async function extractAndSaveKeyFacts(agentKey, userMessage) {
+  const extractPrompt = `Extract important facts from this message. If nothing worth saving, respond "NONE".
 
-User said: "${userMessage}"
+Message: "${userMessage}"
 
-Return ONLY the key facts as bullet points, nothing else. Be concise. Examples of things to extract:
-- People's names and roles
-- Company names
-- Numbers (revenue, funding amounts, dates)
+Extract ONLY:
+- Names + roles + companies
+- Numbers (revenue, dates, amounts)
 - Relationships between people
-- Deals or opportunities
-- Deadlines or timelines
-- Strategic priorities`;
+- Deals, opportunities, deadlines
+- Strategic priorities
+
+Return as bullet points. Be concise.`;
 
   try {
     const response = await anthropic.messages.create({
@@ -501,207 +662,303 @@ Return ONLY the key facts as bullet points, nothing else. Be concise. Examples o
     });
 
     const facts = response.content[0].text.trim();
-
     if (facts && facts !== "NONE" && facts.toLowerCase() !== "none") {
       const existingContext = loadAgentContext(agentKey);
-      const timestamp = new Date().toISOString().split('T')[0]; // Just date
+      const timestamp = new Date().toISOString().split("T")[0];
       const newContext = existingContext
         ? `${existingContext}\n\n[${timestamp}]\n${facts}`
         : `[${timestamp}]\n${facts}`;
       saveAgentContext(agentKey, newContext);
-      console.log(`  📝 Extracted facts for ${agentKey}:`, facts.slice(0, 100));
+      console.log(`  📝 Saved facts for ${agentKey}`);
     }
   } catch (error) {
-    console.error("Error extracting facts:", error.message);
+    console.error("Fact extraction error:", error.message);
   }
 }
 
-/* --------------------------------
-   CONTEXT COMMANDS
--------------------------------- */
-async function handleContextCommand(text, agentKey, say) {
-  // "context" or "what do you know" - Show what the agent knows
-  const contextMatch = text.match(/^(context|what do you know|show context)\??$/i);
-  if (contextMatch) {
+/* ================================
+   COMMAND HANDLERS
+================================ */
+async function handleCommands(text, agentKey, say, client, channelId) {
+  const lowerText = text.toLowerCase().trim();
+
+  // Show context
+  if (lowerText.match(/^(context|what do you know|show context)\??$/)) {
     const context = loadAgentContext(agentKey);
     if (context) {
-      await say(`📚 *What I know:*\n\n${context.slice(0, 3000)}${context.length > 3000 ? '\n\n_(truncated)_' : ''}`);
+      await say(`*What I Know*\n───────────────────────\n${context.slice(0, 3500)}${context.length > 3500 ? "\n\n_(truncated)_" : ""}`);
     } else {
-      await say(`I don't have any stored knowledge yet. Just share info with me naturally and I'll remember it.`);
+      await say("I don't have stored knowledge yet. Just share info naturally and I'll remember it.");
     }
     return true;
   }
 
-  // "clear context" or "forget everything" - Reset agent's context
-  const clearMatch = text.match(/^(clear context|forget everything|reset)$/i);
-  if (clearMatch) {
+  // Show goals
+  if (lowerText.match(/^(goals|okrs|objectives)\??$/)) {
+    const agent = AGENTS[agentKey];
+    if (agent.goals) {
+      await say(`*My Goals*\n───────────────────────\n${agent.goals.map((g, i) => `${i + 1}. ${g}`).join("\n")}`);
+    }
+    return true;
+  }
+
+  // Show drafts
+  if (lowerText.match(/^(drafts|show drafts|pending drafts)\??$/)) {
+    const drafts = loadDrafts(agentKey).filter(d => d.status === "pending");
+    if (drafts.length > 0) {
+      let msg = `*Pending Drafts (${drafts.length})*\n───────────────────────\n`;
+      drafts.slice(-5).forEach((d, i) => {
+        msg += `\n*#${d.id}* - ${d.type}\n${d.content.slice(0, 200)}...\n`;
+      });
+      await say(msg);
+    } else {
+      await say("No pending drafts.");
+    }
+    return true;
+  }
+
+  // Clear context
+  if (lowerText.match(/^(clear context|forget everything|reset)$/)) {
     saveAgentContext(agentKey, "");
-    const convPath = path.join(CONVERSATIONS_DIR, `${CHANNEL_AGENT_MAP[agentKey] || agentKey}.json`);
-    if (fs.existsSync(convPath)) fs.unlinkSync(convPath);
-    await say(`🗑️ Memory cleared. Starting fresh.`);
+    const channelName = Object.entries(CHANNEL_AGENT_MAP).find(([_, a]) => a === agentKey)?.[0];
+    if (channelName) {
+      const convPath = path.join(CONVERSATIONS_DIR, `${channelName}.json`);
+      if (fs.existsSync(convPath)) fs.unlinkSync(convPath);
+    }
+    await say("Memory cleared. Starting fresh.");
+    return true;
+  }
+
+  // Standup command
+  if (lowerText.match(/^(standup|daily standup|status)$/)) {
+    await runStandup(agentKey, client, channelId);
     return true;
   }
 
   return false;
 }
 
-/* --------------------------------
-   LISTEN TO MENTIONS
--------------------------------- */
-app.event("app_mention", async ({ event, say, client }) => {
-  const channelInfo = await client.conversations.info({
-    channel: event.channel,
+/* ================================
+   STANDUP SYSTEM
+================================ */
+async function runStandup(agentKey, client, channelId) {
+  const agent = AGENTS[agentKey];
+  const context = loadAgentContext(agentKey);
+  const tasks = loadTasks().filter(t => t.to === agentKey && t.status === "open");
+
+  const standupPrompt = `Generate your daily standup report. Be concise and action-oriented.
+
+Your goals:
+${agent.goals ? agent.goals.map((g, i) => `${i + 1}. ${g}`).join("\n") : "None set"}
+
+Your stored context:
+${context ? context.slice(0, 2000) : "None yet"}
+
+Open tasks assigned to you:
+${tasks.length > 0 ? tasks.map(t => `- ${t.task}`).join("\n") : "None"}
+
+FORMAT:
+**STANDUP: [Your Name]**
+
+🎯 **Top Priority Today:**
+[One thing that matters most]
+
+📊 **Progress on Goals:**
+[Brief status on each goal]
+
+🚧 **Blockers:**
+[What's in your way]
+
+📋 **Need from CEO:**
+[Decisions or input needed]
+
+💡 **Proactive Recommendation:**
+[One thing you think we should do]`;
+
+  const standup = await callLLM(agentKey, standupPrompt, [], []);
+
+  await client.chat.postMessage({
+    channel: channelId,
+    text: `${standup}`,
+  });
+}
+
+async function runAllStandups() {
+  console.log("🌅 Running daily standups...");
+
+  for (const [channelName, agentKey] of Object.entries(CHANNEL_AGENT_MAP)) {
+    try {
+      // Get channel ID
+      const channels = await app.client.conversations.list({ types: "public_channel,private_channel" });
+      const channel = channels.channels.find(c => c.name === channelName);
+
+      if (channel) {
+        await runStandup(agentKey, app.client, channel.id);
+        console.log(`  ✓ ${agentKey} standup posted`);
+        // Small delay between standups
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    } catch (error) {
+      console.error(`  ✗ ${agentKey} standup failed:`, error.message);
+    }
+  }
+
+  // COS summary after all standups
+  try {
+    const channels = await app.client.conversations.list({ types: "public_channel,private_channel" });
+    const cosChannel = channels.channels.find(c => c.name === "cos-command");
+
+    if (cosChannel) {
+      const summaryPrompt = `Generate a brief executive summary for the CEO. What are the top 3 things that need attention today across all departments?`;
+      const summary = await callLLM("cos", summaryPrompt, [], []);
+
+      await app.client.chat.postMessage({
+        channel: cosChannel.id,
+        text: `*DAILY BRIEFING*\n───────────────────────\n\n${summary}`,
+      });
+    }
+  } catch (error) {
+    console.error("COS summary failed:", error.message);
+  }
+}
+
+/* ================================
+   TASK ROUTING
+================================ */
+async function handleCOSRouting(text, client, say) {
+  const match = text.match(/^assign\s+(\w+)\s*:\s*(.*)$/i);
+  if (!match) return false;
+
+  const targetKey = match[1].toLowerCase();
+  const task = match[2];
+
+  const channelEntry = Object.entries(CHANNEL_AGENT_MAP).find(([_, agent]) => agent === targetKey);
+  if (!channelEntry) {
+    await say(`Unknown agent: "${targetKey}"`);
+    return true;
+  }
+
+  const [channelName] = channelEntry;
+  addTask({ from: "cos", to: targetKey, task });
+
+  await client.chat.postMessage({
+    channel: `#${channelName}`,
+    text: `*Task from COS*\n───────────────────────\n${task}`,
   });
 
+  await say(`Routed to *${AGENTS[targetKey].name}*`);
+  return true;
+}
+
+/* ================================
+   MAIN LISTENER
+================================ */
+app.event("app_mention", async ({ event, say, client }) => {
+  const channelInfo = await client.conversations.info({ channel: event.channel });
   const channelName = channelInfo.channel.name;
   const agentKey = CHANNEL_AGENT_MAP[channelName] || "cos";
   const agent = AGENTS[agentKey];
   const text = cleanText(event.text);
-
-  // Process any file attachments
   const attachments = await processAttachments(event);
 
-  console.log(`MENTION in #${channelName}:`, text);
-  if (attachments.length > 0) {
-    console.log(`  Attachments:`, attachments.map(a => a.name));
-  }
+  console.log(`[${agent.name}] ${text.slice(0, 50)}...`);
 
-  // Handle special commands
-  const handled = await handleContextCommand(text, agentKey, say);
+  // Handle commands
+  const handled = await handleCommands(text, agentKey, say, client, event.channel);
   if (handled) return;
 
+  // COS routing
   if (agentKey === "cos") {
     const routed = await handleCOSRouting(text, client, say);
     if (routed) return;
   }
 
-  // Show typing indicator with context
+  // Thinking indicator
   const hasImages = attachments.some(a => a.base64);
-  const thinkingText = hasImages
-    ? `🔄 *${agent.name}* is analyzing your image...`
-    : `🔄 *${agent.name}* is working on this...`;
-
   const thinkingMsg = await client.chat.postMessage({
     channel: event.channel,
-    text: thinkingText,
+    text: hasImages ? `*${agent.name}* is analyzing...` : `*${agent.name}* is working...`,
   });
 
   try {
-    // Load conversation history
     const history = loadConversation(channelName);
-
-    // Handle long text by truncating if needed (Slack limit workaround)
-    let userMessage = text;
-    if (text.length > 12000) {
-      userMessage = text.slice(0, 12000) + "\n\n[Note: Message was truncated due to length]";
-      console.log(`  ⚠️ Truncated long message from ${text.length} to 12000 chars`);
-    }
-
+    let userMessage = text.length > 12000 ? text.slice(0, 12000) + "\n[truncated]" : text;
     if (attachments.length > 0) {
       userMessage += "\n\n[Attachments: " + attachments.map(a => a.description || a.name).join(", ") + "]";
     }
 
     addToConversation(channelName, "user", userMessage, attachments);
 
-    // Get response with full history and attachments (for vision)
     let reply;
     try {
       reply = await callLLM(agentKey, userMessage, history, attachments);
     } catch (llmError) {
-      // If image processing fails, retry without images
       if (llmError.message && (llmError.message.includes("image") || llmError.message.includes("Could not process"))) {
-        console.log("  ⚠️ Image processing failed, retrying without images...");
         reply = await callLLM(agentKey, userMessage, history, []);
-        reply += "\n\n_⚠️ Couldn't read the image - try a PNG or JPG under 5MB_";
+        reply += "\n\n_⚠️ Couldn't process image - try PNG/JPG under 5MB_";
       } else {
         throw llmError;
       }
     }
 
-    // Save assistant response to history
     addToConversation(channelName, "assistant", reply);
+    extractAndSaveKeyFacts(agentKey, userMessage).catch(() => {});
 
-    // Auto-extract and save key facts (runs in background, don't await)
-    extractAndSaveKeyFacts(agentKey, userMessage, reply).catch(err =>
-      console.error("Fact extraction error:", err.message)
-    );
+    // Delete thinking
+    await client.chat.delete({ channel: event.channel, ts: thinkingMsg.ts });
 
-    // Delete thinking message
-    await client.chat.delete({
-      channel: event.channel,
-      ts: thinkingMsg.ts,
-    });
+    // Check if reply contains a draft
+    if (reply.includes("TO:") && reply.includes("SUBJECT:")) {
+      const draft = saveDraft(agentKey, "email", reply, {});
+      reply += `\n\n_Draft saved (#${draft.id}). Say "send" when ready._`;
+    }
 
-    // Format response nicely
-    let llmUsed = agent.llm || DEFAULT_LLM;
-    if (llmUsed === "gemini" && !GEMINI_AVAILABLE) llmUsed = "claude";
-
-    // Clean, professional format
-    const header = `*${agent.name}*`;
-    const divider = "───────────────────────";
-
-    await say(`${header}\n${divider}\n\n${reply}`);
+    await say(`*${agent.name}*\n───────────────────────\n\n${reply}`);
 
   } catch (error) {
-    console.error("Error processing message:", error.message);
-
-    // Delete thinking message
+    console.error("Error:", error.message);
     try {
-      await client.chat.delete({
-        channel: event.channel,
-        ts: thinkingMsg.ts,
-      });
+      await client.chat.delete({ channel: event.channel, ts: thinkingMsg.ts });
     } catch (e) {}
-
-    await say(`❌ *${agent.name}* hit an error: ${error.message}\n\nTry again or rephrase your message.`);
+    await say(`*${agent.name}* hit an error: ${error.message}`);
   }
 });
 
-/* --------------------------------
-   DAILY COS SUMMARY (EVERY 24H)
--------------------------------- */
-setInterval(async () => {
-  const tasks = loadTasks();
-  const openTasks = tasks.filter(t => t.status === "open");
+/* ================================
+   SCHEDULED JOBS
+================================ */
+// Daily standup at 9am
+function scheduleStandups() {
+  const now = new Date();
+  const next9am = new Date();
+  next9am.setHours(9, 0, 0, 0);
+  if (now > next9am) next9am.setDate(next9am.getDate() + 1);
 
-  // Gather recent activity from all channels
-  let activity = "";
-  for (const channelName of Object.keys(CHANNEL_AGENT_MAP)) {
-    const history = loadConversation(channelName);
-    const recent = history.slice(-5);
-    if (recent.length > 0) {
-      activity += `\n#${channelName}:\n`;
-      for (const msg of recent) {
-        activity += `- ${msg.role}: ${msg.content.slice(0, 100)}...\n`;
-      }
-    }
-  }
+  const msUntil9am = next9am - now;
+  console.log(`⏰ Next standup scheduled in ${Math.round(msUntil9am / 1000 / 60)} minutes`);
 
-  const summaryPrompt = `
-Summarize the last 24 hours.
+  setTimeout(() => {
+    runAllStandups();
+    // Then run every 24 hours
+    setInterval(runAllStandups, 24 * 60 * 60 * 1000);
+  }, msUntil9am);
+}
 
-Open Tasks:
-${openTasks.map(t => `- ${t.to}: ${t.task}`).join("\n") || "None"}
-
-Recent Activity:
-${activity || "None"}
-
-Give me a brief executive summary.
-`;
-
-  const summary = await callLLM("cos", summaryPrompt, [], []);
-
-  await app.client.chat.postMessage({
-    channel: "#cos-command",
-    text: `📊 *Daily COS Summary*\n\n${summary}`,
-  });
-}, 1000 * 60 * 60 * 24);
-
-/* --------------------------------
+/* ================================
    START
--------------------------------- */
+================================ */
 (async () => {
   await app.start();
-  console.log("⚡ Umbrella agent is live in Slack");
-  console.log(`📁 Memory stored in: ${MEMORY_DIR}`);
+  console.log("⚡ Umbrella AI Employees are online");
+  console.log(`📁 Memory: ${MEMORY_DIR}`);
+  console.log(`👥 Agents: ${Object.keys(AGENTS).join(", ")}`);
+
+  // Schedule daily standups
+  scheduleStandups();
+
+  // Run standups now if requested
+  if (process.env.RUN_STANDUP_NOW === "true") {
+    console.log("🚀 Running standups immediately...");
+    setTimeout(runAllStandups, 5000);
+  }
 })();
