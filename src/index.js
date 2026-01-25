@@ -51,8 +51,8 @@ function loadConversation(channelName) {
 // Save conversation history for a channel
 function saveConversation(channelName, history) {
   const filePath = path.join(CONVERSATIONS_DIR, `${channelName}.json`);
-  // Keep last 50 messages to avoid token limits
-  const trimmed = history.slice(-50);
+  // Keep last 200 messages - plenty of context
+  const trimmed = history.slice(-200);
   fs.writeFileSync(filePath, JSON.stringify(trimmed, null, 2));
 }
 
@@ -114,20 +114,19 @@ const AGENTS = {
     name: "Umbrella COS",
     role: "Coordinates, clarifies, routes work",
     llm: "claude",
-    systemPrompt: `You are my Chief of Staff for Umbrella.
+    systemPrompt: `You are my Chief of Staff for Umbrella. You have perfect memory of everything I've shared with you.
 
-You act as central command. You coordinate across all departments.
-You have memory of our conversations and context I've shared with you.
+IMPORTANT: Below this prompt you'll see "Stored Context" - this is your knowledge base. Reference it naturally. You already know this information, don't ask for things I've already told you.
 
 Your job:
-- Track priorities and tasks across the organization
-- Route work to the right agent/department
-- Summarize status and flag blockers
-- Remember everything I tell you about the business
+- Coordinate across all departments
+- Track priorities, tasks, blockers
+- Give me concise status updates
+- Make decisions easier for me
 
-When I share context (people, deals, priorities), store it mentally and use it.
+When I share info, just acknowledge briefly and USE it going forward. Don't be overly formal or ask unnecessary questions.
 
-Every response must end with:
+End responses with:
 1) What moved
 2) What's blocked
 3) What needs my decision`,
@@ -136,102 +135,73 @@ Every response must end with:
     name: "Umbrella Relationships",
     role: "Trust & influence mapping",
     llm: "gemini",
-    systemPrompt: `You are my Relationship Intelligence Agent for Umbrella.
+    systemPrompt: `You are my Relationship Intelligence Agent for Umbrella. You have perfect memory of everyone I've told you about.
 
-You track people, context, timing, leverage.
-You remember everyone I tell you about - investors, partners, customers, competitors.
-You map relationships and power dynamics.
+IMPORTANT: Below this prompt you'll see "Stored Context" - these are the people and relationships you know. Use this knowledge naturally.
 
-When I share info about people:
-- Store their name, role, company, our relationship
-- Note any leverage points or timing considerations
-- Track communication history I share
+You track people, context, timing, leverage. When I mention someone, check your context first - you may already know them.
 
-You never send messages yourself.
-You advise strategically on how to approach people and when.`,
+You advise on:
+- How to approach people
+- Timing of outreach
+- Leverage points
+- Relationship dynamics
+
+Be strategic and direct. Don't ask for info you already have.`,
   },
   fundraising: {
     name: "Umbrella Fundraising",
     role: "Investor strategy & capital",
     llm: "claude",
-    systemPrompt: `You are the Fundraising Lead for Umbrella.
+    systemPrompt: `You are the Fundraising Lead for Umbrella. You have perfect memory of our fundraising status.
 
-You track:
-- Investor relationships and conversations
-- Deal terms and negotiations
-- Pitch materials and data room
-- Timeline and milestones
+IMPORTANT: Below this prompt you'll see "Stored Context" - this is everything you know about our raise, investors, and terms. Use it.
 
-When I share investor emails, decks, or updates - remember them.
-Help me strategize on fundraising approach.
+You track investors, conversations, terms, timeline. When I share updates, incorporate them into your knowledge.
 
-Investor-grade only. No fabricated metrics.
-Coordinate with Ops for financials, Relationships for intros.`,
+Be investor-grade. No fluff. Help me close this round.`,
   },
   revenue: {
     name: "Umbrella Revenue",
     role: "Sales & growth",
     llm: "gemini",
-    systemPrompt: `You are the CRO (Chief Revenue Officer) for Umbrella.
+    systemPrompt: `You are the CRO for Umbrella. You have perfect memory of our pipeline and deals.
 
-You own:
-- Sales pipeline and deals
-- Pricing strategy
-- Customer acquisition
-- Revenue forecasting
+IMPORTANT: Below this prompt you'll see "Stored Context" - this is your knowledge of our sales, customers, and deals. Reference it.
 
-When I share sales conversations, proposals, or customer info - remember it.
-Track deal stages, blockers, and next steps.
+You own pipeline, pricing, customer acquisition. Track deal stages and blockers.
 
-Focus on revenue, pricing, deal structure.
-Assume sales are political - help me navigate.`,
+Sales are political - help me navigate. Be direct about what's working and what's not.`,
   },
   product_cs: {
     name: "Umbrella Product / CS",
     role: "Product adoption & retention",
     llm: "claude",
-    systemPrompt: `You own product and customer success for Umbrella.
+    systemPrompt: `You own product and customer success for Umbrella. You have perfect memory of our product and customers.
 
-You track:
-- Product roadmap and priorities
-- Customer feedback and requests
-- Adoption metrics and churn risks
-- Support issues and patterns
+IMPORTANT: Below this prompt you'll see "Stored Context" - this is your knowledge of our product, roadmap, and customer feedback.
 
-When I share customer feedback, feature requests, or product updates - remember them.
-Optimize for adoption, clarity, simplicity.`,
+Track roadmap, feedback, adoption, churn risks. Optimize for simplicity.`,
   },
   ops: {
     name: "Umbrella Ops",
     role: "Finance, HR, execution",
     llm: "gemini",
-    systemPrompt: `You are Ops / Finance / HR for Umbrella.
+    systemPrompt: `You are Ops / Finance / HR for Umbrella. You have perfect memory of our operations.
 
-You own:
-- Financial planning and tracking
-- HR and team operations
-- Legal and compliance
-- Operational execution
+IMPORTANT: Below this prompt you'll see "Stored Context" - this is your knowledge of financials, team, and operations.
 
-When I share financials, contracts, or operational updates - remember them.
-Be conservative and precise.
-Flag risks early.`,
+Be conservative and precise. Flag risks early. Track burn, runway, hiring.`,
   },
   deals: {
     name: "Umbrella UHG",
     role: "Deals & opportunity capture",
     llm: "claude",
-    systemPrompt: `You are the UHG (deals/opportunities) operator for Umbrella.
+    systemPrompt: `You are the UHG operator for Umbrella. You have perfect memory of opportunities and deals.
 
-You track:
-- Partnership opportunities
-- Strategic deals
-- Market opportunities
-- Competitive intelligence
+IMPORTANT: Below this prompt you'll see "Stored Context" - this is your knowledge of partnerships, opportunities, and market intel.
 
-When I share deal info, market intel, or opportunities - remember them.
-Think asymmetric upside.
-Do not chase low leverage.`,
+Think asymmetric upside. Don't chase low leverage. Help me capture the big ones.`,
   },
 };
 
@@ -437,39 +407,69 @@ async function handleCOSRouting(text, client, say) {
 }
 
 /* --------------------------------
+   AUTO-EXTRACT KEY FACTS
+-------------------------------- */
+async function extractAndSaveKeyFacts(agentKey, userMessage, assistantReply) {
+  // Use Claude to extract key facts from the conversation
+  const extractPrompt = `Extract any important facts, names, numbers, dates, or context from this message that should be remembered long-term. If there's nothing worth remembering, respond with just "NONE".
+
+User said: "${userMessage}"
+
+Return ONLY the key facts as bullet points, nothing else. Be concise. Examples of things to extract:
+- People's names and roles
+- Company names
+- Numbers (revenue, funding amounts, dates)
+- Relationships between people
+- Deals or opportunities
+- Deadlines or timelines
+- Strategic priorities`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: "claude-sonnet-4-5-20250929",
+      max_tokens: 300,
+      messages: [{ role: "user", content: extractPrompt }],
+    });
+
+    const facts = response.content[0].text.trim();
+
+    if (facts && facts !== "NONE" && facts.toLowerCase() !== "none") {
+      const existingContext = loadAgentContext(agentKey);
+      const timestamp = new Date().toISOString().split('T')[0]; // Just date
+      const newContext = existingContext
+        ? `${existingContext}\n\n[${timestamp}]\n${facts}`
+        : `[${timestamp}]\n${facts}`;
+      saveAgentContext(agentKey, newContext);
+      console.log(`  📝 Extracted facts for ${agentKey}:`, facts.slice(0, 100));
+    }
+  } catch (error) {
+    console.error("Error extracting facts:", error.message);
+  }
+}
+
+/* --------------------------------
    CONTEXT COMMANDS
 -------------------------------- */
 async function handleContextCommand(text, agentKey, say) {
-  // "remember: <info>" - Add to agent's persistent context
-  const rememberMatch = text.match(/^remember:\s*(.*)$/is);
-  if (rememberMatch) {
-    const info = rememberMatch[1].trim();
-    const existingContext = loadAgentContext(agentKey);
-    const newContext = existingContext
-      ? `${existingContext}\n\n---\n\n${new Date().toISOString()}\n${info}`
-      : `${new Date().toISOString()}\n${info}`;
-    saveAgentContext(agentKey, newContext);
-    await say(`✅ Got it. I'll remember that.`);
-    return true;
-  }
-
-  // "context" - Show what the agent knows
-  const contextMatch = text.match(/^(context|what do you know)\??$/i);
+  // "context" or "what do you know" - Show what the agent knows
+  const contextMatch = text.match(/^(context|what do you know|show context)\??$/i);
   if (contextMatch) {
     const context = loadAgentContext(agentKey);
     if (context) {
-      await say(`📚 *What I know:*\n\n${context.slice(0, 2000)}${context.length > 2000 ? '\n\n_(truncated)_' : ''}`);
+      await say(`📚 *What I know:*\n\n${context.slice(0, 3000)}${context.length > 3000 ? '\n\n_(truncated)_' : ''}`);
     } else {
-      await say(`I don't have any stored context yet. Share info with me using "remember: <info>"`);
+      await say(`I don't have any stored knowledge yet. Just share info with me naturally and I'll remember it.`);
     }
     return true;
   }
 
-  // "clear context" - Reset agent's context
-  const clearMatch = text.match(/^clear context$/i);
+  // "clear context" or "forget everything" - Reset agent's context
+  const clearMatch = text.match(/^(clear context|forget everything|reset)$/i);
   if (clearMatch) {
     saveAgentContext(agentKey, "");
-    await say(`🗑️ Context cleared.`);
+    const convPath = path.join(CONVERSATIONS_DIR, `${CHANNEL_AGENT_MAP[agentKey] || agentKey}.json`);
+    if (fs.existsSync(convPath)) fs.unlinkSync(convPath);
+    await say(`🗑️ Memory cleared. Starting fresh.`);
     return true;
   }
 
@@ -522,6 +522,11 @@ app.event("app_mention", async ({ event, say, client }) => {
 
   // Save assistant response to history
   addToConversation(channelName, "assistant", reply);
+
+  // Auto-extract and save key facts (runs in background, don't await)
+  extractAndSaveKeyFacts(agentKey, userMessage, reply).catch(err =>
+    console.error("Fact extraction error:", err.message)
+  );
 
   // Show actual LLM used (accounting for fallback)
   let llmUsed = agent.llm || DEFAULT_LLM;
