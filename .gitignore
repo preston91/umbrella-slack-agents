@@ -1,3 +1,7 @@
 .env
 node_modules/
 memory/
+
+# Gmail OAuth (sensitive)
+gmail_credentials.json
+gmail_token.json

@@ -4,6 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "start": "node src/index.js",
+    "gmail-auth": "node src/gmail.js --auth",
+    "standup-now": "RUN_STANDUP_NOW=true node src/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -14,7 +17,10 @@
     "@anthropic-ai/sdk": "^0.71.2",
     "@google/generative-ai": "^0.21.0",
     "@slack/bolt": "^4.6.0",
+    "@supabase/supabase-js": "^2.91.1",
     "axios": "^1.13.2",
-    "dotenv": "^17.2.3"
+    "dotenv": "^17.2.3",
+    "googleapis": "^170.1.0",
+    "pdf-parse": "^2.4.5"
   }
 }

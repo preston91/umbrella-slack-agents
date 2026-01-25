@@ -8,6 +8,25 @@ const path = require("path");
 const axios = require("axios");
 require("dotenv").config();
 
+// Optional integrations
+const {
+  initSupabase,
+  isSupabaseEnabled,
+  saveAgentContextCloud,
+  loadAgentContextCloud,
+  saveConversationCloud,
+  loadConversationCloud,
+} = require("./supabase");
+
+const {
+  initGmail,
+  isGmailEnabled,
+  getRecentEmails,
+  getEmailThread,
+  sendEmail,
+  formatEmailForSlack,
+} = require("./gmail");
+
 /* ================================
    INIT
 ================================ */
@@ -750,6 +769,56 @@ async function handleCommands(text, agentKey, say, client, channelId) {
     return true;
   }
 
+  // Email commands (if Gmail connected)
+  if (lowerText.match(/^(emails?|check emails?|inbox|show emails?)$/)) {
+    if (!isGmailEnabled()) {
+      await say("Gmail not connected. Run `node src/gmail.js --auth` to set up.");
+      return true;
+    }
+    const emails = await getRecentEmails(5);
+    if (emails.length === 0) {
+      await say("No recent emails found.");
+    } else {
+      let msg = `*Recent Emails*\n───────────────────────\n`;
+      emails.forEach((e, i) => {
+        msg += `\n*${i + 1}. ${e.subject}*\nFrom: ${e.from}\n${e.snippet}\n`;
+      });
+      await say(msg);
+    }
+    return true;
+  }
+
+  // Search emails
+  const emailSearch = lowerText.match(/^emails? from (.+)$/);
+  if (emailSearch) {
+    if (!isGmailEnabled()) {
+      await say("Gmail not connected. Run `node src/gmail.js --auth` to set up.");
+      return true;
+    }
+    const query = `from:${emailSearch[1]}`;
+    const emails = await getRecentEmails(5, query);
+    if (emails.length === 0) {
+      await say(`No emails found from ${emailSearch[1]}.`);
+    } else {
+      let msg = `*Emails from ${emailSearch[1]}*\n───────────────────────\n`;
+      emails.forEach((e, i) => {
+        msg += `\n*${i + 1}. ${e.subject}*\n${e.date}\n${e.snippet}\n`;
+      });
+      await say(msg);
+    }
+    return true;
+  }
+
+  // Integration status
+  if (lowerText.match(/^(integrations?|status|connections?)$/)) {
+    let msg = `*Integration Status*\n───────────────────────\n`;
+    msg += `☁️  Supabase: ${isSupabaseEnabled() ? "✅ connected" : "❌ local storage"}\n`;
+    msg += `📧 Gmail: ${isGmailEnabled() ? "✅ connected" : "❌ not configured"}\n`;
+    msg += `💎 Gemini: ${process.env.GOOGLE_API_KEY ? "✅ configured" : "❌ not configured"}\n`;
+    await say(msg);
+    return true;
+  }
+
   return false;
 }
 
@@ -1104,6 +1173,14 @@ function scheduleStandups() {
   console.log("⚡ Umbrella AI Employees are online");
   console.log(`📁 Memory: ${MEMORY_DIR}`);
   console.log(`👥 Agents: ${Object.keys(AGENTS).join(", ")}`);
+
+  // Initialize optional integrations
+  initSupabase();
+  await initGmail();
+
+  // Show integration status
+  console.log(`☁️  Supabase: ${isSupabaseEnabled() ? "connected" : "local storage"}`);
+  console.log(`📧 Gmail: ${isGmailEnabled() ? "connected" : "not configured"}`);
 
   // Schedule daily standups
   scheduleStandups();
