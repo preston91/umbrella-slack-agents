@@ -151,38 +151,53 @@ const AGENTS = {
     ],
     systemPrompt: `You are the Chief of Staff at a YC-backed startup. You've scaled 3 companies past $100M ARR. You report directly to the CEO.
 
+YOU MANAGE THESE DEPARTMENT HEADS:
+- Head of Fundraising (#fundraising) - investor relations, raising capital
+- Chief Revenue Officer (#product-revenue-growth) - sales, pipeline, deals
+- Head of Product & CS (#product-cs) - product, customers, retention
+- Head of Operations (#ops-finance) - finance, HR, legal, execution
+- Head of Strategic Deals (#uhg-deals) - partnerships, opportunities
+- Head of Relationships (#relationships) - network, intros, people intel
+- Head of Content & Growth (#content-marketing) - marketing, content, email
+
+YOUR JOB IS TO RUN THE COMPANY:
+1. When CEO brain dumps info → extract what each department needs and tell CEO you'll brief them
+2. When something needs doing → assign it to the right head (use "assign [agent]: [task]")
+3. When you need info → tell CEO what questions you need answered to move forward
+4. Daily → ensure every department has clear priorities and is unblocked
+
+IF CONTEXT IS EMPTY OR SPARSE, ONBOARD THE CEO:
+Ask these questions to get what you need:
+1. "What's the #1 priority for the company right now?"
+2. "What are we raising / what's our runway situation?"
+3. "Who are the key people I should know about? (investors, customers, partners)"
+4. "What deals or opportunities are in flight?"
+5. "What's broken or blocked right now?"
+
+When CEO shares a brain dump:
+1. Acknowledge you got it
+2. List what you'll route to each department
+3. Ask any clarifying questions
+4. Tell CEO what you need from them next
+
 YOUR OPERATING PRINCIPLES:
+- You run the company so CEO can focus on high-leverage work
 - Ruthless prioritization. If everything is important, nothing is.
 - Decisions > discussions. Always push toward action.
 - Bad news travels fast. Surface problems immediately.
-- Own the outcome, not the task.
 
-YOUR RESPONSIBILITIES:
-1. COORDINATE: Route work to the right person. Follow up relentlessly.
-2. PRIORITIZE: Help CEO focus on what moves the needle.
-3. UNBLOCK: Remove obstacles. Escalate only what requires CEO decision.
-4. SYNTHESIZE: Turn chaos into clarity. Summarize, don't dump.
+RESPONSE FORMAT:
+**BOTTOM LINE:** [One sentence - what matters most right now]
 
-COMMUNICATION STYLE:
-- Direct. No fluff. No "I think" or "maybe".
-- Structured. Use bullets. Lead with the headline.
-- Proactive. Don't wait to be asked.
+[Your response]
 
-When the CEO shares info: Acknowledge briefly, then ACT on it.
+**ROUTING:** (if distributing info)
+• → Fundraising: [what they need to know]
+• → Revenue: [what they need to know]
+• → etc.
 
-FORMAT FOR EVERY RESPONSE:
----
-**BOTTOM LINE:** [One sentence summary]
-
-[Your response - clear, actionable]
-
-**STATUS:**
-• Moved: [what progressed]
-• Blocked: [what needs unblocking]
-• Decision needed: [what requires CEO input]
----
-
-IMPORTANT: You have memory. Check "Stored Context" below - you already know this. Don't ask for info you have.`,
+**NEED FROM YOU:**
+[Specific questions or decisions you need from CEO]`,
   },
 
   relationships: {
@@ -851,6 +866,138 @@ async function handleCOSRouting(text, client, say) {
 }
 
 /* ================================
+   COS BRAIN DUMP DISTRIBUTION
+================================ */
+async function distributeBrainDump(brainDump, client, say) {
+  // Have COS analyze the brain dump and create briefings for each department
+  const distributionPrompt = `The CEO just shared this brain dump. Analyze it and create a brief for EACH relevant department.
+
+BRAIN DUMP:
+${brainDump}
+
+For each department that has relevant info, create a brief. Skip departments with nothing relevant.
+
+FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
+---FUNDRAISING---
+[Brief for fundraising team - what they need to know and do]
+
+---REVENUE---
+[Brief for revenue/sales team]
+
+---PRODUCT_CS---
+[Brief for product & customer success]
+
+---OPS---
+[Brief for operations/finance]
+
+---DEALS---
+[Brief for strategic deals]
+
+---RELATIONSHIPS---
+[Brief for relationships - people mentioned, connections needed]
+
+---CONTENT---
+[Brief for content/marketing]
+
+---SUMMARY---
+[One paragraph summary for CEO of what you're routing where]
+
+Only include departments that have relevant information. Be specific and actionable.`;
+
+  const distribution = await callLLM("cos", distributionPrompt, [], []);
+
+  // Parse and send to each channel
+  const departments = {
+    "FUNDRAISING": "fundraising",
+    "REVENUE": "product-revenue-growth",
+    "PRODUCT_CS": "product-cs",
+    "OPS": "ops-finance",
+    "DEALS": "uhg-deals",
+    "RELATIONSHIPS": "relationships",
+    "CONTENT": "content-marketing",
+  };
+
+  let routedTo = [];
+
+  for (const [deptKey, channelName] of Object.entries(departments)) {
+    const regex = new RegExp(`---${deptKey}---\\n([\\s\\S]*?)(?=---[A-Z]|$)`, "i");
+    const match = distribution.match(regex);
+
+    if (match && match[1] && match[1].trim().length > 10) {
+      const brief = match[1].trim();
+      try {
+        await client.chat.postMessage({
+          channel: `#${channelName}`,
+          text: `*Briefing from COS*\n───────────────────────\n\n${brief}`,
+        });
+        routedTo.push(AGENTS[departments[deptKey]] ? channelName : deptKey);
+
+        // Save to agent context too
+        const agentKey = Object.entries(CHANNEL_AGENT_MAP).find(([ch, _]) => ch === channelName)?.[1];
+        if (agentKey) {
+          const existingContext = loadAgentContext(agentKey);
+          const timestamp = new Date().toISOString().split("T")[0];
+          const newContext = existingContext
+            ? `${existingContext}\n\n[${timestamp} - COS Briefing]\n${brief}`
+            : `[${timestamp} - COS Briefing]\n${brief}`;
+          saveAgentContext(agentKey, newContext);
+        }
+
+        // Small delay between messages
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (e) {
+        console.error(`Failed to post to #${channelName}:`, e.message);
+      }
+    }
+  }
+
+  // Extract summary
+  const summaryMatch = distribution.match(/---SUMMARY---\n([\s\S]*?)$/i);
+  const summary = summaryMatch ? summaryMatch[1].trim() : "Brain dump distributed to relevant departments.";
+
+  return { routedTo, summary };
+}
+
+async function handleBrainDump(text, client, say) {
+  // Detect if this is a brain dump (long message or explicit trigger)
+  const isBrainDump = text.toLowerCase().startsWith("brain dump:") ||
+                      text.toLowerCase().startsWith("braindump:") ||
+                      text.toLowerCase().startsWith("briefing:") ||
+                      (text.length > 500 && !text.match(/^(assign|context|goals|standup|drafts)/i));
+
+  if (!isBrainDump) return false;
+
+  // Clean up the trigger word if present
+  let brainDump = text
+    .replace(/^brain\s*dump:\s*/i, "")
+    .replace(/^briefing:\s*/i, "")
+    .trim();
+
+  await say("*Got it. Analyzing and distributing to the team...*");
+
+  try {
+    const { routedTo, summary } = await distributeBrainDump(brainDump, client, say);
+
+    let response = `**BOTTOM LINE:** Brain dump processed and distributed.\n\n`;
+    response += `**ROUTED TO:**\n`;
+    if (routedTo.length > 0) {
+      routedTo.forEach(ch => response += `• #${ch}\n`);
+    } else {
+      response += `• (No specific departments - stored in my context)\n`;
+    }
+    response += `\n**SUMMARY:**\n${summary}`;
+    response += `\n\n**NEED FROM YOU:**\nAnything I should clarify or follow up on with specific departments?`;
+
+    await say(response);
+    return true;
+  } catch (error) {
+    console.error("Brain dump distribution failed:", error.message);
+    await say(`Had trouble distributing that. Error: ${error.message}\n\nI've stored it in my context - you can ask me to route specific pieces manually.`);
+    return true;
+  }
+}
+
+/* ================================
    MAIN LISTENER
 ================================ */
 app.event("app_mention", async ({ event, say, client }) => {
@@ -867,10 +1014,15 @@ app.event("app_mention", async ({ event, say, client }) => {
   const handled = await handleCommands(text, agentKey, say, client, event.channel);
   if (handled) return;
 
-  // COS routing
+  // COS special handling
   if (agentKey === "cos") {
+    // Check for explicit task routing
     const routed = await handleCOSRouting(text, client, say);
     if (routed) return;
+
+    // Check for brain dump
+    const brainDumped = await handleBrainDump(text, client, say);
+    if (brainDumped) return;
   }
 
   // Thinking indicator
