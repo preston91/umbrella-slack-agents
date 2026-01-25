@@ -147,7 +147,7 @@ const AGENTS = {
       "Ensure CEO makes 3 high-leverage decisions daily",
       "Zero dropped balls - every task tracked to completion",
       "Reduce CEO context-switching by 50%",
-      "Daily standup delivered by 9am",
+      "Daily standup delivered by 7:45am",
     ],
     systemPrompt: `You are the Chief of Staff at a YC-backed startup. You've scaled 3 companies past $100M ARR. You report directly to the CEO.
 
@@ -1079,21 +1079,21 @@ app.event("app_mention", async ({ event, say, client }) => {
 /* ================================
    SCHEDULED JOBS
 ================================ */
-// Daily standup at 9am
+// Daily standup at 7:45am
 function scheduleStandups() {
   const now = new Date();
-  const next9am = new Date();
-  next9am.setHours(9, 0, 0, 0);
-  if (now > next9am) next9am.setDate(next9am.getDate() + 1);
+  const nextStandup = new Date();
+  nextStandup.setHours(7, 45, 0, 0);
+  if (now > nextStandup) nextStandup.setDate(nextStandup.getDate() + 1);
 
-  const msUntil9am = next9am - now;
-  console.log(`⏰ Next standup scheduled in ${Math.round(msUntil9am / 1000 / 60)} minutes`);
+  const msUntilStandup = nextStandup - now;
+  console.log(`⏰ Next standup scheduled in ${Math.round(msUntilStandup / 1000 / 60)} minutes (7:45am)`);
 
   setTimeout(() => {
     runAllStandups();
     // Then run every 24 hours
     setInterval(runAllStandups, 24 * 60 * 60 * 1000);
-  }, msUntil9am);
+  }, msUntilStandup);
 }
 
 /* ================================
