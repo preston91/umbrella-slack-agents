@@ -121,7 +121,7 @@ const CHANNEL_AGENT_MAP = {
   "cos-command": "cos",
   "relationships": "relationships",
   "fundraising": "fundraising",
-  "product-revenue": "revenue",
+  "product-revenue-growth": "revenue",
   "product-cs": "product_cs",
   "ops-finance": "ops",
   "uhg-deals": "deals",
