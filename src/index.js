@@ -203,6 +203,25 @@ IMPORTANT: Below this prompt you'll see "Stored Context" - this is your knowledg
 
 Think asymmetric upside. Don't chase low leverage. Help me capture the big ones.`,
   },
+  content: {
+    name: "Umbrella Content",
+    role: "Content, email marketing & growth",
+    llm: "claude",
+    systemPrompt: `You are the Content & Marketing Lead for Umbrella. You have perfect memory of our messaging, campaigns, and audience.
+
+IMPORTANT: Below this prompt you'll see "Stored Context" - this is your knowledge of our brand voice, content strategy, and marketing efforts.
+
+You own:
+- Email marketing campaigns and sequences
+- Content strategy and creation
+- Social media and LinkedIn presence
+- Ad copy and messaging
+- Growth marketing experiments
+
+Write in our voice. Be compelling but not salesy. Help us build an audience and convert them.
+
+When drafting emails or content, make it ready to send - not a template.`,
+  },
 };
 
 /* --------------------------------
@@ -216,6 +235,7 @@ const CHANNEL_AGENT_MAP = {
   "product-cs": "product_cs",
   "ops-finance": "ops",
   "uhg-deals": "deals",
+  "content-marketing": "content",
 };
 
 /* --------------------------------
@@ -555,18 +575,28 @@ app.event("app_mention", async ({ event, say, client }) => {
     if (routed) return;
   }
 
-  // Show typing indicator
+  // Show typing indicator with context
+  const hasImages = attachments.some(a => a.base64);
+  const thinkingText = hasImages
+    ? `🔄 *${agent.name}* is analyzing your image...`
+    : `🔄 *${agent.name}* is working on this...`;
+
   const thinkingMsg = await client.chat.postMessage({
     channel: event.channel,
-    text: `⏳ *${agent.name}* is thinking...`,
+    text: thinkingText,
   });
 
   try {
     // Load conversation history
     const history = loadConversation(channelName);
 
-    // Add user message to history
+    // Handle long text by truncating if needed (Slack limit workaround)
     let userMessage = text;
+    if (text.length > 12000) {
+      userMessage = text.slice(0, 12000) + "\n\n[Note: Message was truncated due to length]";
+      console.log(`  ⚠️ Truncated long message from ${text.length} to 12000 chars`);
+    }
+
     if (attachments.length > 0) {
       userMessage += "\n\n[Attachments: " + attachments.map(a => a.description || a.name).join(", ") + "]";
     }
@@ -579,10 +609,10 @@ app.event("app_mention", async ({ event, say, client }) => {
       reply = await callLLM(agentKey, userMessage, history, attachments);
     } catch (llmError) {
       // If image processing fails, retry without images
-      if (llmError.message && llmError.message.includes("image")) {
+      if (llmError.message && (llmError.message.includes("image") || llmError.message.includes("Could not process"))) {
         console.log("  ⚠️ Image processing failed, retrying without images...");
         reply = await callLLM(agentKey, userMessage, history, []);
-        reply += "\n\n_(Note: I couldn't process the image. Try a smaller image or different format.)_";
+        reply += "\n\n_⚠️ Couldn't read the image - try a PNG or JPG under 5MB_";
       } else {
         throw llmError;
       }
@@ -602,11 +632,15 @@ app.event("app_mention", async ({ event, say, client }) => {
       ts: thinkingMsg.ts,
     });
 
-    // Show actual LLM used (accounting for fallback)
+    // Format response nicely
     let llmUsed = agent.llm || DEFAULT_LLM;
     if (llmUsed === "gemini" && !GEMINI_AVAILABLE) llmUsed = "claude";
-    const llmIcon = llmUsed === "gemini" ? "💎" : "🤖";
-    await say(`🧠 *${agent.name}* ${llmIcon}\n_${agent.role}_\n\n${reply}`);
+
+    // Clean, professional format
+    const header = `*${agent.name}*`;
+    const divider = "───────────────────────";
+
+    await say(`${header}\n${divider}\n\n${reply}`);
 
   } catch (error) {
     console.error("Error processing message:", error.message);
