@@ -2,6 +2,7 @@
 
 const { App } = require("@slack/bolt");
 const Anthropic = require("@anthropic-ai/sdk");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 require("dotenv").config();
 
 /* --------------------------------
@@ -18,6 +19,9 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
+const gemini = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+
 /* --------------------------------
    MEMORY (IN-MEMORY, SIMPLE + SAFE)
 -------------------------------- */
@@ -33,6 +37,7 @@ const AGENTS = {
   cos: {
     name: "Umbrella COS",
     role: "Coordinates, clarifies, routes work",
+    llm: "claude", // COS uses Claude for coordination
     systemPrompt: `
 You are my Chief of Staff.
 
@@ -42,13 +47,14 @@ You assign, track, summarize, and escalate.
 
 Every response must end with:
 1) What moved
-2) What’s blocked
+2) What's blocked
 3) What needs my decision
 `,
   },
   relationships: {
     name: "Umbrella Relationships",
     role: "Trust & influence mapping",
+    llm: "gemini", // Uses Gemini for relationship analysis
     systemPrompt: `
 You are my Relationship Intelligence Agent.
 You track people, context, timing, leverage.
@@ -59,6 +65,7 @@ You advise strategically.
   fundraising: {
     name: "Umbrella Fundraising",
     role: "Investor strategy & capital",
+    llm: "claude", // Uses Claude for investor strategy
     systemPrompt: `
 You are the Fundraising Lead.
 Investor-grade only.
@@ -69,6 +76,7 @@ Coordinate with Ops + Relationships.
   revenue: {
     name: "Umbrella Revenue",
     role: "Sales & growth",
+    llm: "gemini", // Uses Gemini for sales analysis
     systemPrompt: `
 You are the CRO.
 Focus on revenue, pricing, deal structure.
@@ -78,6 +86,7 @@ Assume sales are political.
   product_cs: {
     name: "Umbrella Product / CS",
     role: "Product adoption & retention",
+    llm: "claude", // Uses Claude for product/CS
     systemPrompt: `
 You own product and customer success.
 Optimize for adoption, clarity, simplicity.
@@ -86,6 +95,7 @@ Optimize for adoption, clarity, simplicity.
   ops: {
     name: "Umbrella Ops",
     role: "Finance, HR, execution",
+    llm: "gemini", // Uses Gemini for ops/finance
     systemPrompt: `
 You are Ops / Finance / HR.
 Be conservative and precise.
@@ -95,6 +105,7 @@ Flag risks early.
   deals: {
     name: "Umbrella UHG",
     role: "Deals & opportunity capture",
+    llm: "claude", // Uses Claude for deal analysis
     systemPrompt: `
 You are the UHG operator.
 Think asymmetric upside.
@@ -126,7 +137,7 @@ async function callClaude(agentKey, userText) {
   const agent = AGENTS[agentKey];
 
   const response = await anthropic.messages.create({
-    model:"claude-sonnet-4-5-20250929",
+    model: "claude-sonnet-4-5-20250929",
     max_tokens: 600,
     system: agent.systemPrompt,
     messages: [
@@ -138,6 +149,30 @@ async function callClaude(agentKey, userText) {
   });
 
   return response.content[0].text;
+}
+
+async function callGemini(agentKey, userText) {
+  const agent = AGENTS[agentKey];
+
+  const prompt = `${agent.systemPrompt}\n\n---\n\nUser: ${userText}`;
+
+  const result = await gemini.generateContent(prompt);
+  const response = await result.response;
+
+  return response.text();
+}
+
+// Default LLM provider - can be "claude" or "gemini"
+const DEFAULT_LLM = process.env.DEFAULT_LLM || "claude";
+
+async function callLLM(agentKey, userText, provider = null) {
+  const llmProvider = provider || AGENTS[agentKey].llm || DEFAULT_LLM;
+
+  if (llmProvider === "gemini") {
+    return callGemini(agentKey, userText);
+  }
+
+  return callClaude(agentKey, userText);
 }
 
 /* --------------------------------
@@ -204,9 +239,11 @@ app.event("app_mention", async ({ event, say, client }) => {
     if (routed) return;
   }
 
-  const reply = await callClaude(agentKey, text);
+  const reply = await callLLM(agentKey, text);
 
-  await say(`🧠 *${agent.name} online*\n_${agent.role}_\n\n${reply}`);
+  const llmUsed = agent.llm || DEFAULT_LLM;
+  const llmIcon = llmUsed === "gemini" ? "💎" : "🤖";
+  await say(`🧠 *${agent.name}* ${llmIcon}\n_${agent.role}_\n\n${reply}`);
 });
 
 /* --------------------------------
@@ -223,7 +260,7 @@ Tasks:
 ${MEMORY.tasks.map(t => `- ${t.to}: ${t.task}`).join("\n")}
 `;
 
-  const summary = await callClaude("cos", summaryPrompt);
+  const summary = await callLLM("cos", summaryPrompt);
 
   await app.client.chat.postMessage({
     channel: "#cos-command",
