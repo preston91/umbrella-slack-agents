@@ -819,6 +819,32 @@ async function handleCommands(text, agentKey, say, client, channelId) {
     return true;
   }
 
+  // Work schedule
+  if (lowerText.match(/^(schedule|work schedule|work hours)$/)) {
+    let msg = `*Autonomous Work Schedule*\n───────────────────────\n`;
+    msg += `⏰ 7:45am - Morning Standup (all agents)\n`;
+    msg += `🔄 10:30am - Mid-Morning Check\n`;
+    msg += `🔄 2:00pm - Afternoon Check\n`;
+    msg += `🚨 5:30pm - EOD Risk Report\n`;
+    msg += `📊 Fri 4:00pm - Weekly Review\n`;
+    msg += `\n_All reports go to #cos-command_`;
+    await say(msg);
+    return true;
+  }
+
+  // Manual report triggers (COS only)
+  if (lowerText.match(/^(eod report|risk report|end of day)$/)) {
+    await say("Running EOD Risk Report...");
+    setTimeout(runEODRiskReport, 1000);
+    return true;
+  }
+
+  if (lowerText.match(/^(weekly review|weekly report|week review)$/)) {
+    await say("Running Weekly Review...");
+    setTimeout(runWeeklyReview, 1000);
+    return true;
+  }
+
   return false;
 }
 
@@ -1148,21 +1174,306 @@ app.event("app_mention", async ({ event, say, client }) => {
 /* ================================
    SCHEDULED JOBS
 ================================ */
-// Daily standup at 7:45am
-function scheduleStandups() {
-  const now = new Date();
-  const nextStandup = new Date();
-  nextStandup.setHours(7, 45, 0, 0);
-  if (now > nextStandup) nextStandup.setDate(nextStandup.getDate() + 1);
 
-  const msUntilStandup = nextStandup - now;
-  console.log(`⏰ Next standup scheduled in ${Math.round(msUntilStandup / 1000 / 60)} minutes (7:45am)`);
+// Work schedule configuration
+const WORK_SCHEDULE = {
+  // All times in 24hr format
+  morningStandup: { hour: 7, minute: 45 },
+  midMorningCheck: { hour: 10, minute: 30 },
+  afternoonCheck: { hour: 14, minute: 0 },
+  eodReport: { hour: 17, minute: 30 },
+  weeklyReview: { day: 5, hour: 16, minute: 0 }, // Friday 4pm
+};
+
+// Schedule a daily job at a specific time
+function scheduleDailyJob(name, hour, minute, callback) {
+  const now = new Date();
+  const next = new Date();
+  next.setHours(hour, minute, 0, 0);
+  if (now > next) next.setDate(next.getDate() + 1);
+
+  const msUntil = next - now;
+  const minsUntil = Math.round(msUntil / 1000 / 60);
+  console.log(`  ⏰ ${name}: ${minsUntil} min until next run (${hour}:${minute.toString().padStart(2, '0')})`);
 
   setTimeout(() => {
-    runAllStandups();
-    // Then run every 24 hours
-    setInterval(runAllStandups, 24 * 60 * 60 * 1000);
-  }, msUntilStandup);
+    callback();
+    setInterval(callback, 24 * 60 * 60 * 1000);
+  }, msUntil);
+}
+
+// Schedule weekly job (for Friday reviews)
+function scheduleWeeklyJob(name, dayOfWeek, hour, minute, callback) {
+  const now = new Date();
+  const next = new Date();
+  next.setHours(hour, minute, 0, 0);
+
+  // Find next occurrence of this day
+  const daysUntil = (dayOfWeek - now.getDay() + 7) % 7 || 7;
+  next.setDate(now.getDate() + daysUntil);
+
+  // If it's the right day but time passed, go to next week
+  if (now.getDay() === dayOfWeek && now > next) {
+    next.setDate(next.getDate() + 7);
+  }
+
+  const msUntil = next - now;
+  console.log(`  📅 ${name}: ${Math.round(msUntil / 1000 / 60 / 60)} hrs until next run (Fri ${hour}:${minute.toString().padStart(2, '0')})`);
+
+  setTimeout(() => {
+    callback();
+    setInterval(callback, 7 * 24 * 60 * 60 * 1000);
+  }, msUntil);
+}
+
+// Mid-morning/afternoon check-in (lighter than standup)
+async function runMidDayCheck(checkType) {
+  console.log(`🔄 Running ${checkType} check-ins...`);
+
+  const allUpdates = [];
+
+  for (const [channelName, agentKey] of Object.entries(CHANNEL_AGENT_MAP)) {
+    try {
+      const agent = AGENTS[agentKey];
+      const context = loadAgentContext(agentKey);
+      const tasks = loadTasks().filter(t => t.to === agentKey && t.status === "open");
+
+      const checkPrompt = `Quick ${checkType} check-in. Be brief (2-3 sentences max).
+
+Your goals: ${agent.goals ? agent.goals.slice(0, 3).join(", ") : "None"}
+Context: ${context ? context.slice(0, 500) : "None"}
+Open tasks: ${tasks.length}
+
+ONLY respond if you have:
+1. A meaningful update on progress
+2. A blocker that needs attention
+3. A proactive recommendation
+
+If nothing significant, respond with just: "On track."
+
+Format: One brief update or "On track."`;
+
+      const update = await callLLM(agentKey, checkPrompt, [], []);
+
+      // Only post if not just "on track"
+      if (!update.toLowerCase().includes("on track") || update.length > 50) {
+        allUpdates.push({ agent: agent.name, agentKey, update, channelName });
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    } catch (error) {
+      console.error(`  ✗ ${agentKey} check failed:`, error.message);
+    }
+  }
+
+  // COS summarizes to cos-command if there are updates
+  if (allUpdates.length > 0) {
+    try {
+      const channels = await app.client.conversations.list({ types: "public_channel,private_channel" });
+      const cosChannel = channels.channels.find(c => c.name === "cos-command");
+
+      if (cosChannel) {
+        let msg = `*${checkType.toUpperCase()} CHECK-IN*\n───────────────────────\n`;
+        allUpdates.forEach(u => {
+          msg += `\n*${u.agent}:* ${u.update.slice(0, 200)}\n`;
+        });
+
+        await app.client.chat.postMessage({
+          channel: cosChannel.id,
+          text: msg,
+        });
+      }
+    } catch (error) {
+      console.error("COS check-in summary failed:", error.message);
+    }
+  }
+}
+
+// EOD Risk Report - the important one
+async function runEODRiskReport() {
+  console.log("🚨 Running EOD Risk Report...");
+
+  try {
+    const channels = await app.client.conversations.list({ types: "public_channel,private_channel" });
+    const cosChannel = channels.channels.find(c => c.name === "cos-command");
+    if (!cosChannel) return;
+
+    // Gather context from all agents
+    const departmentStatus = [];
+    for (const [agentKey, agent] of Object.entries(AGENTS)) {
+      const context = loadAgentContext(agentKey);
+      const tasks = loadTasks().filter(t => t.to === agentKey && t.status === "open");
+      departmentStatus.push({
+        name: agent.name,
+        role: agent.role,
+        goals: agent.goals || [],
+        contextSnippet: context ? context.slice(-1000) : "No context",
+        openTasks: tasks.length,
+      });
+    }
+
+    const riskPrompt = `Generate the END OF DAY RISK REPORT for the CEO.
+
+TODAY'S DEPARTMENT STATUS:
+${departmentStatus.map(d => `
+${d.name} (${d.role}):
+- Goals: ${d.goals.slice(0, 3).join("; ")}
+- Open tasks: ${d.openTasks}
+- Recent context: ${d.contextSnippet.slice(0, 300)}
+`).join("\n")}
+
+Your job: Identify what could FUCK UP the week if not addressed.
+
+FORMAT (be direct and specific):
+
+**EOD RISK REPORT**
+───────────────────────
+
+🔴 **RED FLAGS** (will cause problems if ignored):
+[List anything that's off track, blocked, or at risk - be specific about WHAT and WHY]
+
+🟡 **WATCH LIST** (not urgent but trending wrong):
+[Things that could become problems]
+
+🟢 **ON TRACK**:
+[Brief note on what's going well]
+
+📋 **CEO ACTION NEEDED**:
+[Specific decisions or unblocks you need from the CEO - be direct]
+
+💡 **TOMORROW'S PRIORITY**:
+[The ONE thing that matters most tomorrow across all departments]
+
+Be brutally honest. No surprises allowed.`;
+
+    const report = await callLLM("cos", riskPrompt, [], []);
+
+    await app.client.chat.postMessage({
+      channel: cosChannel.id,
+      text: report,
+    });
+
+    console.log("  ✓ EOD Risk Report posted");
+  } catch (error) {
+    console.error("EOD Risk Report failed:", error.message);
+  }
+}
+
+// Weekly review - progress against goals
+async function runWeeklyReview() {
+  console.log("📊 Running Weekly Review...");
+
+  try {
+    const channels = await app.client.conversations.list({ types: "public_channel,private_channel" });
+    const cosChannel = channels.channels.find(c => c.name === "cos-command");
+    if (!cosChannel) return;
+
+    // Gather all goals and context
+    const weeklyData = [];
+    for (const [agentKey, agent] of Object.entries(AGENTS)) {
+      const context = loadAgentContext(agentKey);
+      weeklyData.push({
+        name: agent.name,
+        goals: agent.goals || [],
+        context: context || "No data",
+      });
+    }
+
+    const weeklyPrompt = `Generate the WEEKLY PROGRESS REVIEW for the CEO.
+
+ALL DEPARTMENTS AND THEIR GOALS:
+${weeklyData.map(d => `
+${d.name}:
+Goals: ${d.goals.map((g, i) => `${i + 1}. ${g}`).join("\n")}
+Context/Activity: ${d.context.slice(-1500)}
+`).join("\n---\n")}
+
+FORMAT:
+
+**WEEKLY PROGRESS REVIEW**
+═══════════════════════════
+
+📊 **GOAL SCORECARD**:
+[For each department, rate each goal: ✅ On Track, ⚠️ At Risk, ❌ Off Track]
+[Be specific about WHY]
+
+🏆 **WINS THIS WEEK**:
+[What got accomplished - be specific]
+
+🚧 **MISSED/SLIPPED**:
+[What didn't happen that should have]
+
+📈 **REVENUE PROGRESS**:
+[Specific update on pipeline, deals, revenue metrics if any data exists]
+
+🔮 **NEXT WEEK OUTLOOK**:
+[What needs to happen for a successful week]
+
+⚡ **CROSS-TEAM DEPENDENCIES**:
+[Where departments need to work together]
+
+🎯 **CEO STRATEGIC DECISIONS NEEDED**:
+[Big picture items that need your input]
+
+Be specific with numbers, names, and details where possible.`;
+
+    const review = await callLLM("cos", weeklyPrompt, [], []);
+
+    await app.client.chat.postMessage({
+      channel: cosChannel.id,
+      text: review,
+    });
+
+    console.log("  ✓ Weekly Review posted");
+  } catch (error) {
+    console.error("Weekly Review failed:", error.message);
+  }
+}
+
+// Main scheduler
+function scheduleAllJobs() {
+  console.log("📅 Scheduling autonomous work schedule...");
+
+  // Morning standup - 7:45am
+  scheduleDailyJob(
+    "Morning Standup",
+    WORK_SCHEDULE.morningStandup.hour,
+    WORK_SCHEDULE.morningStandup.minute,
+    runAllStandups
+  );
+
+  // Mid-morning check - 10:30am
+  scheduleDailyJob(
+    "Mid-Morning Check",
+    WORK_SCHEDULE.midMorningCheck.hour,
+    WORK_SCHEDULE.midMorningCheck.minute,
+    () => runMidDayCheck("Mid-Morning")
+  );
+
+  // Afternoon check - 2:00pm
+  scheduleDailyJob(
+    "Afternoon Check",
+    WORK_SCHEDULE.afternoonCheck.hour,
+    WORK_SCHEDULE.afternoonCheck.minute,
+    () => runMidDayCheck("Afternoon")
+  );
+
+  // EOD Risk Report - 5:30pm
+  scheduleDailyJob(
+    "EOD Risk Report",
+    WORK_SCHEDULE.eodReport.hour,
+    WORK_SCHEDULE.eodReport.minute,
+    runEODRiskReport
+  );
+
+  // Weekly Review - Friday 4pm
+  scheduleWeeklyJob(
+    "Weekly Review",
+    WORK_SCHEDULE.weeklyReview.day,
+    WORK_SCHEDULE.weeklyReview.hour,
+    WORK_SCHEDULE.weeklyReview.minute,
+    runWeeklyReview
+  );
 }
 
 /* ================================
@@ -1182,8 +1493,8 @@ function scheduleStandups() {
   console.log(`☁️  Supabase: ${isSupabaseEnabled() ? "connected" : "local storage"}`);
   console.log(`📧 Gmail: ${isGmailEnabled() ? "connected" : "not configured"}`);
 
-  // Schedule daily standups
-  scheduleStandups();
+  // Schedule autonomous work system
+  scheduleAllJobs();
 
   // Run standups now if requested
   if (process.env.RUN_STANDUP_NOW === "true") {
