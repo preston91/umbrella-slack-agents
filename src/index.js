@@ -297,7 +297,7 @@ function buildConversationContext(history, agentKey) {
   return context;
 }
 
-async function callClaude(agentKey, userText, history = []) {
+async function callClaude(agentKey, userText, history = [], attachments = []) {
   const agent = AGENTS[agentKey];
   const conversationContext = buildConversationContext(history, agentKey);
 
@@ -318,12 +318,38 @@ async function callClaude(agentKey, userText, history = []) {
     }
   }
 
-  // Add current message
-  messages.push({ role: "user", content: userText });
+  // Build current message content (text + images)
+  const currentContent = [];
+
+  // Add any images first
+  for (const att of attachments) {
+    if (att.base64 && att.type && att.type.startsWith("image/")) {
+      currentContent.push({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: att.type,
+          data: att.base64,
+        },
+      });
+    }
+  }
+
+  // Add the text
+  currentContent.push({
+    type: "text",
+    text: userText,
+  });
+
+  // Add current message with images if present
+  messages.push({
+    role: "user",
+    content: currentContent.length === 1 ? userText : currentContent,
+  });
 
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-5-20250929",
-    max_tokens: 1024,
+    max_tokens: 2048, // More tokens for detailed image analysis
     system: systemPrompt,
     messages: messages,
   });
@@ -331,7 +357,7 @@ async function callClaude(agentKey, userText, history = []) {
   return response.content[0].text;
 }
 
-async function callGemini(agentKey, userText, history = []) {
+async function callGemini(agentKey, userText, history = [], attachments = []) {
   const agent = AGENTS[agentKey];
   const conversationContext = buildConversationContext(history, agentKey);
 
@@ -343,7 +369,25 @@ async function callGemini(agentKey, userText, history = []) {
 
   prompt += `\n\n---\n\nUser: ${userText}`;
 
-  const result = await gemini.generateContent(prompt);
+  // Build content parts for Gemini (supports images too)
+  const parts = [];
+
+  // Add images if present
+  for (const att of attachments) {
+    if (att.base64 && att.type && att.type.startsWith("image/")) {
+      parts.push({
+        inlineData: {
+          mimeType: att.type,
+          data: att.base64,
+        },
+      });
+    }
+  }
+
+  // Add text
+  parts.push({ text: prompt });
+
+  const result = await gemini.generateContent(parts.length === 1 ? prompt : parts);
   const response = await result.response;
 
   return response.text();
@@ -353,7 +397,7 @@ async function callGemini(agentKey, userText, history = []) {
 const DEFAULT_LLM = process.env.DEFAULT_LLM || "claude";
 const GEMINI_AVAILABLE = !!process.env.GOOGLE_API_KEY;
 
-async function callLLM(agentKey, userText, history = [], provider = null) {
+async function callLLM(agentKey, userText, history = [], attachments = [], provider = null) {
   let llmProvider = provider || AGENTS[agentKey].llm || DEFAULT_LLM;
 
   // Fall back to Claude if Gemini requested but no API key
@@ -362,11 +406,16 @@ async function callLLM(agentKey, userText, history = [], provider = null) {
     llmProvider = "claude";
   }
 
-  if (llmProvider === "gemini") {
-    return callGemini(agentKey, userText, history);
+  // If there are images, prefer Claude (better vision) unless Gemini explicitly set
+  if (attachments.length > 0 && attachments.some(a => a.base64)) {
+    console.log(`  📷 Processing ${attachments.filter(a => a.base64).length} image(s)`);
   }
 
-  return callClaude(agentKey, userText, history);
+  if (llmProvider === "gemini") {
+    return callGemini(agentKey, userText, history, attachments);
+  }
+
+  return callClaude(agentKey, userText, history, attachments);
 }
 
 /* --------------------------------
@@ -517,8 +566,8 @@ app.event("app_mention", async ({ event, say, client }) => {
 
   addToConversation(channelName, "user", userMessage, attachments);
 
-  // Get response with full history
-  const reply = await callLLM(agentKey, userMessage, history);
+  // Get response with full history and attachments (for vision)
+  const reply = await callLLM(agentKey, userMessage, history, attachments);
 
   // Save assistant response to history
   addToConversation(channelName, "assistant", reply);
@@ -567,7 +616,7 @@ ${activity || "None"}
 Give me a brief executive summary.
 `;
 
-  const summary = await callLLM("cos", summaryPrompt, []);
+  const summary = await callLLM("cos", summaryPrompt, [], []);
 
   await app.client.chat.postMessage({
     channel: "#cos-command",
