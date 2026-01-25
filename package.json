@@ -1,19 +1,29 @@
 {
   "name": "umbrella-bot",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "2.0.0",
+  "description": "Umbrella AI agents for Slack with integrations",
+  "main": "src/index.js",
   "scripts": {
+    "start": "node src/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": [
+    "slack",
+    "ai",
+    "agents",
+    "anthropic",
+    "claude"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
+    "@google/generative-ai": "^0.21.0",
     "@slack/bolt": "^4.6.0",
     "axios": "^1.13.2",
-    "dotenv": "^17.2.3"
+    "better-sqlite3": "^11.7.0",
+    "dotenv": "^17.2.3",
+    "googleapis": "^144.0.0"
   }
 }
