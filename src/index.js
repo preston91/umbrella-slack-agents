@@ -1177,12 +1177,12 @@ app.event("app_mention", async ({ event, say, client }) => {
 
 // Work schedule configuration
 const WORK_SCHEDULE = {
-  // All times in 24hr format
-  morningStandup: { hour: 7, minute: 45 },
-  midMorningCheck: { hour: 10, minute: 30 },
-  afternoonCheck: { hour: 14, minute: 0 },
-  eodReport: { hour: 17, minute: 30 },
-  weeklyReview: { day: 5, hour: 16, minute: 0 }, // Friday 4pm
+  // All times in 24hr UTC (server runs in UTC, you're in EST = UTC-5)
+  morningStandup: { hour: 12, minute: 45 },   // 7:45am EST
+  midMorningCheck: { hour: 15, minute: 30 },  // 10:30am EST
+  afternoonCheck: { hour: 19, minute: 0 },    // 2:00pm EST
+  eodReport: { hour: 22, minute: 30 },        // 5:30pm EST
+  weeklyReview: { day: 5, hour: 21, minute: 0 }, // Friday 4pm EST
 };
 
 // Schedule a daily job at a specific time
