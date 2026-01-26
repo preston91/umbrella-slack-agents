@@ -593,12 +593,21 @@ function buildConversationContext(history, agentKey) {
   return context;
 }
 
+const FORMATTING_RULES = `
+
+FORMATTING RULES (always follow):
+- Write like a real human, not a robot. Be conversational and direct.
+- Use *bold* for emphasis (Slack style), not **bold**
+- Skip emoji-heavy headers and excessive bullet points
+- Keep responses concise - a few paragraphs max unless they asked for detail
+- Talk to them like a smart colleague, not a formal assistant`;
+
 async function callClaude(agentKey, userText, history = [], attachments = []) {
   const agent = AGENTS[agentKey];
   const conversationContext = buildConversationContext(history, agentKey);
   const systemPrompt = conversationContext
-    ? `${agent.systemPrompt}\n\n---\n\n${conversationContext}`
-    : agent.systemPrompt;
+    ? `${agent.systemPrompt}${FORMATTING_RULES}\n\n---\n\n${conversationContext}`
+    : `${agent.systemPrompt}${FORMATTING_RULES}`;
 
   const messages = [];
   const recentHistory = history.slice(-10);
@@ -638,7 +647,7 @@ async function callClaude(agentKey, userText, history = [], attachments = []) {
 async function callGemini(agentKey, userText, history = [], attachments = []) {
   const agent = AGENTS[agentKey];
   const conversationContext = buildConversationContext(history, agentKey);
-  let prompt = agent.systemPrompt;
+  let prompt = `${agent.systemPrompt}${FORMATTING_RULES}`;
   if (conversationContext) prompt += `\n\n---\n\n${conversationContext}`;
   prompt += `\n\n---\n\nCEO: ${userText}`;
 
@@ -856,34 +865,15 @@ async function runStandup(agentKey, client, channelId) {
   const context = loadAgentContext(agentKey);
   const tasks = loadTasks().filter(t => t.to === agentKey && t.status === "open");
 
-  const standupPrompt = `Generate your daily standup report. Be concise and action-oriented.
+  const standupPrompt = `Give me your morning standup. Write like a real person - casual but professional. No robotic formatting.
 
-Your goals:
-${agent.goals ? agent.goals.map((g, i) => `${i + 1}. ${g}`).join("\n") : "None set"}
+Your goals: ${agent.goals ? agent.goals.slice(0, 3).join(", ") : "None set"}
+Context you have: ${context ? context.slice(0, 1500) : "None yet"}
+Open tasks: ${tasks.length > 0 ? tasks.map(t => t.task).join(", ") : "None"}
 
-Your stored context:
-${context ? context.slice(0, 2000) : "None yet"}
+Write it conversationally, like you're talking to me over coffee. Use Slack formatting (*bold* not **bold**). Keep it tight - what's the one thing you're focused on, any blockers, and what you need from me.
 
-Open tasks assigned to you:
-${tasks.length > 0 ? tasks.map(t => `- ${t.task}`).join("\n") : "None"}
-
-FORMAT:
-**STANDUP: [Your Name]**
-
-🎯 **Top Priority Today:**
-[One thing that matters most]
-
-📊 **Progress on Goals:**
-[Brief status on each goal]
-
-🚧 **Blockers:**
-[What's in your way]
-
-📋 **Need from CEO:**
-[Decisions or input needed]
-
-💡 **Proactive Recommendation:**
-[One thing you think we should do]`;
+Skip the headers and bullet points - just tell me what's up in 2-3 short paragraphs.`;
 
   const standup = await callLLM(agentKey, standupPrompt, [], []);
 
@@ -919,12 +909,12 @@ async function runAllStandups() {
     const cosChannel = channels.channels.find(c => c.name === "cos-command");
 
     if (cosChannel) {
-      const summaryPrompt = `Generate a brief executive summary for the CEO. What are the top 3 things that need attention today across all departments?`;
+      const summaryPrompt = `Morning summary for the CEO. Keep it tight - what are the 2-3 things I should actually focus on today? Write conversationally like you're my chief of staff giving me a quick verbal briefing. Use *bold* for Slack formatting. No headers or bullet walls.`;
       const summary = await callLLM("cos", summaryPrompt, [], []);
 
       await app.client.chat.postMessage({
         channel: cosChannel.id,
-        text: `*DAILY BRIEFING*\n───────────────────────\n\n${summary}`,
+        text: summary,
       });
     }
   } catch (error) {
@@ -1273,9 +1263,9 @@ Format: One brief update or "On track."`;
       const cosChannel = channels.channels.find(c => c.name === "cos-command");
 
       if (cosChannel) {
-        let msg = `*${checkType.toUpperCase()} CHECK-IN*\n───────────────────────\n`;
+        let msg = `Quick ${checkType.toLowerCase()} update:\n\n`;
         allUpdates.forEach(u => {
-          msg += `\n*${u.agent}:* ${u.update.slice(0, 200)}\n`;
+          msg += `*${u.agent}* - ${u.update.slice(0, 200)}\n\n`;
         });
 
         await app.client.chat.postMessage({
@@ -1312,39 +1302,19 @@ async function runEODRiskReport() {
       });
     }
 
-    const riskPrompt = `Generate the END OF DAY RISK REPORT for the CEO.
+    const riskPrompt = `End of day report. Write like a sharp chief of staff - direct, no fluff, human.
 
-TODAY'S DEPARTMENT STATUS:
-${departmentStatus.map(d => `
-${d.name} (${d.role}):
-- Goals: ${d.goals.slice(0, 3).join("; ")}
-- Open tasks: ${d.openTasks}
-- Recent context: ${d.contextSnippet.slice(0, 300)}
-`).join("\n")}
+Department status:
+${departmentStatus.map(d => `${d.name}: ${d.goals.slice(0, 2).join("; ")} | ${d.openTasks} tasks | ${d.contextSnippet.slice(0, 200)}`).join("\n")}
 
-Your job: Identify what could FUCK UP the week if not addressed.
+Tell me straight up:
+1. What's actually at risk this week (be specific, not generic)
+2. What's fine and I don't need to worry about
+3. What do you need me to decide or unblock
 
-FORMAT (be direct and specific):
+Write it conversationally like you're my right hand. Use *bold* for emphasis (Slack style). No headers with emojis - just talk to me. If nothing's on fire, say that. If something's fucked, tell me directly.
 
-**EOD RISK REPORT**
-───────────────────────
-
-🔴 **RED FLAGS** (will cause problems if ignored):
-[List anything that's off track, blocked, or at risk - be specific about WHAT and WHY]
-
-🟡 **WATCH LIST** (not urgent but trending wrong):
-[Things that could become problems]
-
-🟢 **ON TRACK**:
-[Brief note on what's going well]
-
-📋 **CEO ACTION NEEDED**:
-[Specific decisions or unblocks you need from the CEO - be direct]
-
-💡 **TOMORROW'S PRIORITY**:
-[The ONE thing that matters most tomorrow across all departments]
-
-Be brutally honest. No surprises allowed.`;
+Keep it to 3-4 short paragraphs max.`;
 
     const report = await callLLM("cos", riskPrompt, [], []);
 
@@ -1379,43 +1349,20 @@ async function runWeeklyReview() {
       });
     }
 
-    const weeklyPrompt = `Generate the WEEKLY PROGRESS REVIEW for the CEO.
+    const weeklyPrompt = `Friday weekly wrap-up. Talk to me like my chief of staff giving me the real deal on how the week went.
 
-ALL DEPARTMENTS AND THEIR GOALS:
-${weeklyData.map(d => `
-${d.name}:
-Goals: ${d.goals.map((g, i) => `${i + 1}. ${g}`).join("\n")}
-Context/Activity: ${d.context.slice(-1500)}
-`).join("\n---\n")}
+Here's what each team has been up to:
+${weeklyData.map(d => `${d.name} - Goals: ${d.goals.slice(0, 2).join(", ")} | Activity: ${d.context.slice(-800)}`).join("\n\n")}
 
-FORMAT:
+Give me the honest summary:
+- What actually got done this week (wins)
+- What slipped or we missed
+- Where we're on track vs at risk on our goals
+- What I need to decide or focus on next week
 
-**WEEKLY PROGRESS REVIEW**
-═══════════════════════════
+Write like a human. Use *bold* for Slack. No emoji headers or bullet point walls. Just give it to me straight in a few paragraphs - like a smart friend who's been watching everything.
 
-📊 **GOAL SCORECARD**:
-[For each department, rate each goal: ✅ On Track, ⚠️ At Risk, ❌ Off Track]
-[Be specific about WHY]
-
-🏆 **WINS THIS WEEK**:
-[What got accomplished - be specific]
-
-🚧 **MISSED/SLIPPED**:
-[What didn't happen that should have]
-
-📈 **REVENUE PROGRESS**:
-[Specific update on pipeline, deals, revenue metrics if any data exists]
-
-🔮 **NEXT WEEK OUTLOOK**:
-[What needs to happen for a successful week]
-
-⚡ **CROSS-TEAM DEPENDENCIES**:
-[Where departments need to work together]
-
-🎯 **CEO STRATEGIC DECISIONS NEEDED**:
-[Big picture items that need your input]
-
-Be specific with numbers, names, and details where possible.`;
+If we're killing it, say so. If we're behind, tell me where and why.`;
 
     const review = await callLLM("cos", weeklyPrompt, [], []);
 
