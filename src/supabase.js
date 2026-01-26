@@ -4,13 +4,16 @@
  * Features:
  * - Cloud memory storage (replaces local JSON)
  * - Document storage with vector search (RAG)
+ * - Gemini embeddings for semantic search
  * - Conversation history
  * - Agent context persistence
  */
 
 const { createClient } = require("@supabase/supabase-js");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 let supabase = null;
+let genAI = null;
 
 function initSupabase() {
   const url = process.env.SUPABASE_URL;
@@ -22,12 +25,37 @@ function initSupabase() {
   }
 
   supabase = createClient(url, key);
+
+  // Init Gemini for embeddings
+  if (process.env.GOOGLE_API_KEY) {
+    genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
+  }
+
   console.log("✅ Supabase connected");
   return supabase;
 }
 
 function isSupabaseEnabled() {
   return supabase !== null;
+}
+
+/* ================================
+   GEMINI EMBEDDINGS
+================================ */
+async function generateEmbedding(text) {
+  if (!genAI) {
+    console.log("⚠️  Gemini not available for embeddings");
+    return null;
+  }
+
+  try {
+    const model = genAI.getGenerativeModel({ model: "text-embedding-004" });
+    const result = await model.embedContent(text);
+    return result.embedding.values;
+  } catch (error) {
+    console.error("Embedding generation failed:", error.message);
+    return null;
+  }
 }
 
 /* ================================
@@ -101,16 +129,19 @@ async function loadConversationCloud(channelName) {
 /* ================================
    DOCUMENTS & RAG
 ================================ */
-async function saveDocument(title, content, metadata = {}) {
+async function saveDocument(title, content, metadata = {}, agentKey = null) {
   if (!supabase) return null;
 
-  // Store the document
+  // Generate embedding for semantic search
+  const embedding = await generateEmbedding(content.slice(0, 8000)); // Limit for embedding
+
   const { data, error } = await supabase
     .from("documents")
     .insert({
       title,
       content,
-      metadata,
+      metadata: { ...metadata, agent_key: agentKey },
+      embedding,
       created_at: new Date().toISOString()
     })
     .select()
@@ -121,22 +152,76 @@ async function saveDocument(title, content, metadata = {}) {
     return null;
   }
 
+  console.log(`📄 Document saved: ${title}`);
   return data;
 }
 
-async function searchDocuments(query, limit = 5) {
+// Semantic search using vector similarity
+async function searchDocumentsSemantic(query, limit = 5, agentKey = null) {
   if (!supabase) return [];
 
-  // Simple text search for now
-  // TODO: Add vector embeddings for semantic search
+  // Generate embedding for the query
+  const queryEmbedding = await generateEmbedding(query);
+  if (!queryEmbedding) {
+    // Fallback to text search
+    return searchDocumentsText(query, limit);
+  }
+
+  try {
+    // Use Supabase RPC for vector similarity search
+    const { data, error } = await supabase.rpc("match_documents", {
+      query_embedding: queryEmbedding,
+      match_threshold: 0.5,
+      match_count: limit
+    });
+
+    if (error) {
+      console.error("Semantic search failed, falling back to text:", error.message);
+      return searchDocumentsText(query, limit);
+    }
+
+    return data || [];
+  } catch (e) {
+    console.error("Semantic search error:", e.message);
+    return searchDocumentsText(query, limit);
+  }
+}
+
+// Simple text search fallback
+async function searchDocumentsText(query, limit = 5) {
+  if (!supabase) return [];
+
   const { data, error } = await supabase
     .from("documents")
     .select("*")
-    .textSearch("content", query)
+    .textSearch("content", query.split(" ").join(" | "))
     .limit(limit);
 
   if (error) {
-    console.error("Document search failed:", error.message);
+    console.error("Text search failed:", error.message);
+    return [];
+  }
+
+  return data || [];
+}
+
+// Main search function - tries semantic first, falls back to text
+async function searchDocuments(query, limit = 5) {
+  return searchDocumentsSemantic(query, limit);
+}
+
+// Get all documents (for listing)
+async function listDocuments(limit = 20) {
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from("documents")
+    .select("id, title, metadata, created_at")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error("Failed to list documents:", error.message);
     return [];
   }
 
@@ -153,7 +238,7 @@ async function saveDraftCloud(agentKey, draftType, content, metadata = {}) {
     .from("drafts")
     .insert({
       agent_key: agentKey,
-      draft_type: draftType, // 'email', 'linkedin', 'tweet', etc
+      draft_type: draftType,
       content,
       metadata,
       status: "pending",
@@ -253,11 +338,12 @@ async function getKeyFacts(agentKey, limit = 50) {
 }
 
 /* ================================
-   SETUP HELPER
+   SETUP SQL
 ================================ */
 function getSetupSQL() {
   return `
--- Run this in Supabase SQL Editor to set up tables
+-- Enable vector extension FIRST (required for embeddings)
+CREATE EXTENSION IF NOT EXISTS vector;
 
 -- Agent context (persistent memory per agent)
 CREATE TABLE IF NOT EXISTS agent_context (
@@ -273,13 +359,13 @@ CREATE TABLE IF NOT EXISTS conversations (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Documents (for RAG)
+-- Documents (for RAG) - using 768 dimensions for Gemini embeddings
 CREATE TABLE IF NOT EXISTS documents (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   title TEXT,
   content TEXT,
   metadata JSONB DEFAULT '{}',
-  embedding VECTOR(1536), -- For OpenAI embeddings later
+  embedding VECTOR(768),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -287,10 +373,10 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE TABLE IF NOT EXISTS drafts (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   agent_key TEXT,
-  draft_type TEXT, -- 'email', 'linkedin', 'tweet'
+  draft_type TEXT,
   content TEXT,
   metadata JSONB DEFAULT '{}',
-  status TEXT DEFAULT 'pending', -- 'pending', 'approved', 'sent', 'rejected'
+  status TEXT DEFAULT 'pending',
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ
 );
@@ -304,26 +390,55 @@ CREATE TABLE IF NOT EXISTS key_facts (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Enable vector extension for RAG (run separately if needed)
--- CREATE EXTENSION IF NOT EXISTS vector;
-
 -- Create indexes
 CREATE INDEX IF NOT EXISTS idx_drafts_agent ON drafts(agent_key);
 CREATE INDEX IF NOT EXISTS idx_drafts_status ON drafts(status);
 CREATE INDEX IF NOT EXISTS idx_key_facts_agent ON key_facts(agent_key);
-CREATE INDEX IF NOT EXISTS idx_documents_content ON documents USING GIN(to_tsvector('english', content));
+
+-- Vector similarity search function
+CREATE OR REPLACE FUNCTION match_documents (
+  query_embedding VECTOR(768),
+  match_threshold FLOAT,
+  match_count INT
+)
+RETURNS TABLE (
+  id UUID,
+  title TEXT,
+  content TEXT,
+  metadata JSONB,
+  similarity FLOAT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    documents.id,
+    documents.title,
+    documents.content,
+    documents.metadata,
+    1 - (documents.embedding <=> query_embedding) AS similarity
+  FROM documents
+  WHERE 1 - (documents.embedding <=> query_embedding) > match_threshold
+  ORDER BY documents.embedding <=> query_embedding
+  LIMIT match_count;
+END;
+$$;
 `;
 }
 
 module.exports = {
   initSupabase,
   isSupabaseEnabled,
+  generateEmbedding,
   saveAgentContextCloud,
   loadAgentContextCloud,
   saveConversationCloud,
   loadConversationCloud,
   saveDocument,
   searchDocuments,
+  searchDocumentsText,
+  listDocuments,
   saveDraftCloud,
   getDraftsCloud,
   updateDraftStatusCloud,

@@ -16,6 +16,9 @@ const {
   loadAgentContextCloud,
   saveConversationCloud,
   loadConversationCloud,
+  saveDocument,
+  searchDocuments,
+  listDocuments,
 } = require("./supabase");
 
 const {
@@ -539,22 +542,100 @@ async function downloadFile(url) {
   }
 }
 
-async function processAttachments(event) {
+async function downloadFileAsText(url) {
+  try {
+    const response = await axios.get(url, {
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+      responseType: "text",
+    });
+    return response.data;
+  } catch (error) {
+    console.error("Error downloading file as text:", error.message);
+    return null;
+  }
+}
+
+async function downloadFileAsBuffer(url) {
+  try {
+    const response = await axios.get(url, {
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+      responseType: "arraybuffer",
+    });
+    return Buffer.from(response.data);
+  } catch (error) {
+    console.error("Error downloading file as buffer:", error.message);
+    return null;
+  }
+}
+
+async function processAttachments(event, agentKey = null) {
   const attachments = [];
   if (event.files && event.files.length > 0) {
     for (const file of event.files) {
       const fileInfo = { name: file.name, type: file.mimetype, title: file.title };
+
+      // Images - for vision
       if (file.mimetype && file.mimetype.startsWith("image/")) {
         const base64 = await downloadFile(file.url_private);
         if (base64) {
           fileInfo.base64 = base64;
           fileInfo.description = `[Image: ${file.name}]`;
         }
-      } else if (file.mimetype === "application/pdf") {
-        fileInfo.description = `[PDF: ${file.name}]`;
-      } else {
+      }
+      // PDFs - extract text and save to knowledge base
+      else if (file.mimetype === "application/pdf") {
+        try {
+          const pdfParse = require("pdf-parse");
+          const buffer = await downloadFileAsBuffer(file.url_private);
+          if (buffer) {
+            const pdfData = await pdfParse(buffer);
+            const textContent = pdfData.text;
+
+            // Save to knowledge base
+            if (isSupabaseEnabled() && textContent.length > 100) {
+              await saveDocument(file.name || file.title, textContent, {
+                type: "pdf",
+                pages: pdfData.numpages,
+                source: "slack_upload"
+              }, agentKey);
+              fileInfo.savedToKB = true;
+            }
+
+            fileInfo.textContent = textContent.slice(0, 5000);
+            fileInfo.description = `[PDF: ${file.name} - ${pdfData.numpages} pages, saved to knowledge base]`;
+          }
+        } catch (e) {
+          console.error("PDF parsing failed:", e.message);
+          fileInfo.description = `[PDF: ${file.name} - could not parse]`;
+        }
+      }
+      // Text files - save to knowledge base
+      else if (file.mimetype && (
+        file.mimetype.startsWith("text/") ||
+        file.mimetype === "application/json" ||
+        file.name.endsWith(".md") ||
+        file.name.endsWith(".txt")
+      )) {
+        const textContent = await downloadFileAsText(file.url_private);
+        if (textContent) {
+          // Save to knowledge base
+          if (isSupabaseEnabled() && textContent.length > 100) {
+            await saveDocument(file.name || file.title, textContent, {
+              type: file.mimetype,
+              source: "slack_upload"
+            }, agentKey);
+            fileInfo.savedToKB = true;
+          }
+
+          fileInfo.textContent = textContent.slice(0, 5000);
+          fileInfo.description = `[File: ${file.name} - saved to knowledge base]`;
+        }
+      }
+      // Other files
+      else {
         fileInfo.description = `[File: ${file.name} (${file.mimetype})]`;
       }
+
       attachments.push(fileInfo);
     }
   }
@@ -566,7 +647,7 @@ async function processAttachments(event) {
 ================================ */
 const cleanText = (text) => text.replace(/<@.*?>/g, "").trim();
 
-function buildConversationContext(history, agentKey) {
+async function buildConversationContext(history, agentKey, userQuery = "") {
   const agent = AGENTS[agentKey];
   const agentContext = loadAgentContext(agentKey);
   let context = "";
@@ -579,6 +660,21 @@ function buildConversationContext(history, agentKey) {
   // Add stored knowledge
   if (agentContext) {
     context += `## STORED CONTEXT (You know this - don't ask again)\n${agentContext}\n\n`;
+  }
+
+  // Search knowledge base for relevant docs (RAG)
+  if (userQuery && userQuery.length > 10 && isSupabaseEnabled()) {
+    try {
+      const relevantDocs = await searchDocuments(userQuery, 2);
+      if (relevantDocs && relevantDocs.length > 0) {
+        context += "## RELEVANT DOCUMENTS (from knowledge base)\n";
+        for (const doc of relevantDocs) {
+          context += `### ${doc.title}\n${doc.content.slice(0, 1500)}\n\n`;
+        }
+      }
+    } catch (e) {
+      // Silently fail - don't break the conversation
+    }
   }
 
   // Add recent conversation
@@ -604,7 +700,7 @@ FORMATTING RULES (always follow):
 
 async function callClaude(agentKey, userText, history = [], attachments = []) {
   const agent = AGENTS[agentKey];
-  const conversationContext = buildConversationContext(history, agentKey);
+  const conversationContext = await buildConversationContext(history, agentKey, userText);
   const systemPrompt = conversationContext
     ? `${agent.systemPrompt}${FORMATTING_RULES}\n\n---\n\n${conversationContext}`
     : `${agent.systemPrompt}${FORMATTING_RULES}`;
@@ -646,7 +742,7 @@ async function callClaude(agentKey, userText, history = [], attachments = []) {
 
 async function callGemini(agentKey, userText, history = [], attachments = []) {
   const agent = AGENTS[agentKey];
-  const conversationContext = buildConversationContext(history, agentKey);
+  const conversationContext = await buildConversationContext(history, agentKey, userText);
   let prompt = `${agent.systemPrompt}${FORMATTING_RULES}`;
   if (conversationContext) prompt += `\n\n---\n\n${conversationContext}`;
   prompt += `\n\n---\n\nCEO: ${userText}`;
@@ -851,6 +947,52 @@ async function handleCommands(text, agentKey, say, client, channelId) {
   if (lowerText.match(/^(weekly review|weekly report|week review)$/)) {
     await say("Running Weekly Review...");
     setTimeout(runWeeklyReview, 1000);
+    return true;
+  }
+
+  // Document commands
+  if (lowerText.match(/^(docs|documents|list docs|show docs)$/)) {
+    const docs = await listDocuments(10);
+    if (docs.length === 0) {
+      await say("No documents saved yet. Upload a file or say *save doc: [title]* with some text.");
+    } else {
+      let msg = `*Saved Documents (${docs.length})*\n\n`;
+      docs.forEach((d, i) => {
+        msg += `${i + 1}. *${d.title}* - ${new Date(d.created_at).toLocaleDateString()}\n`;
+      });
+      await say(msg);
+    }
+    return true;
+  }
+
+  // Save document manually
+  const saveDocMatch = text.match(/^save doc:\s*(.+?)\n([\s\S]+)$/i);
+  if (saveDocMatch) {
+    const title = saveDocMatch[1].trim();
+    const content = saveDocMatch[2].trim();
+    const result = await saveDocument(title, content, {}, agentKey);
+    if (result) {
+      await say(`Saved *${title}* to knowledge base. I can now search this when answering questions.`);
+    } else {
+      await say("Failed to save document. Is Supabase connected?");
+    }
+    return true;
+  }
+
+  // Search documents
+  const searchMatch = text.match(/^search docs?:\s*(.+)$/i);
+  if (searchMatch) {
+    const query = searchMatch[1].trim();
+    const results = await searchDocuments(query, 3);
+    if (results.length === 0) {
+      await say(`No documents found matching "${query}".`);
+    } else {
+      let msg = `*Search results for "${query}"*\n\n`;
+      results.forEach((d, i) => {
+        msg += `*${d.title}*\n${d.content.slice(0, 300)}...\n\n`;
+      });
+      await say(msg);
+    }
     return true;
   }
 
@@ -1091,7 +1233,7 @@ app.event("app_mention", async ({ event, say, client }) => {
   const agentKey = CHANNEL_AGENT_MAP[channelName] || "cos";
   const agent = AGENTS[agentKey];
   const text = cleanText(event.text);
-  const attachments = await processAttachments(event);
+  const attachments = await processAttachments(event, agentKey);
 
   console.log(`[${agent.name}] ${text.slice(0, 50)}...`);
 
