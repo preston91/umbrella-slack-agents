@@ -1232,8 +1232,13 @@ app.event("app_mention", async ({ event, say, client }) => {
   const channelName = channelInfo.channel.name;
   const agentKey = CHANNEL_AGENT_MAP[channelName] || "cos";
   const agent = AGENTS[agentKey];
-  const text = cleanText(event.text);
+  let text = cleanText(event.text);
   const attachments = await processAttachments(event, agentKey);
+
+  // Handle empty mentions
+  if (!text || text.trim() === "") {
+    text = "Hey, checking in - what do you need?";
+  }
 
   console.log(`[${agent.name}] ${text.slice(0, 50)}...`);
 
