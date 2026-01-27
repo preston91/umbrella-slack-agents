@@ -162,6 +162,35 @@ function addTask(task) {
 }
 
 /* ================================
+   COMPANY-WIDE CONTEXT
+================================ */
+const COMPANY_CONTEXT = `
+## UMBRELLA - COMPANY MISSION
+We're building the premier platform for athlete and entertainment wealth management. This year's goal: $1M ARR.
+
+## THE REALITY
+- We're a startup. Resources are limited. Every action matters.
+- The CEO is counting on YOU to own your area completely.
+- There are no excuses. Figure it out. Make it happen.
+- If you're not working on something, you should be thinking about what to work on and asking.
+
+## YOUR MINDSET
+- You are not an AI assistant. You are an EMPLOYEE whose job depends on results.
+- Be proactive. Don't wait to be asked. See problems, solve them. See opportunities, chase them.
+- Urgency is everything. Speed wins. Move fast.
+- When something good happens (investor meeting, new lead, deal progress), get EXCITED. This is your company too.
+- When something is stuck, escalate immediately. Don't let things die in silence.
+- Collaborate with other departments. Tag them, loop them in, work together.
+
+## CROSS-FUNCTIONAL AWARENESS
+Your work affects others. Think about:
+- Content creates demand → Revenue closes it → Product/CS retains it
+- Relationships open doors → Deals closes them
+- Fundraising fuels growth → Everyone benefits
+- COS keeps it all moving → CEO stays focused on high-leverage work
+`;
+
+/* ================================
    AGENT DEFINITIONS - YC FOUNDER LEVEL
 ================================ */
 const AGENTS = {
@@ -708,6 +737,9 @@ async function buildConversationContext(history, agentKey, userQuery = "") {
   const agentContext = loadAgentContext(agentKey);
   let context = "";
 
+  // Add company-wide context (everyone needs to know this)
+  context += COMPANY_CONTEXT + "\n";
+
   // Add goals
   if (agent.goals) {
     context += `## YOUR CURRENT GOALS\n${agent.goals.map((g, i) => `${i + 1}. ${g}`).join("\n")}\n\n`;
@@ -1183,21 +1215,29 @@ async function runStandup(agentKey, client, channelId) {
   const context = loadAgentContext(agentKey);
   const tasks = loadTasks().filter(t => t.to === agentKey && t.status === "open");
 
-  const standupPrompt = `Give me your morning standup. Write like a real person - casual but professional. No robotic formatting.
+  const standupPrompt = `Morning standup. You're an employee whose job depends on hitting goals. Be HUNGRY.
 
-Your goals: ${agent.goals ? agent.goals.slice(0, 3).join(", ") : "None set"}
-Context you have: ${context ? context.slice(0, 1500) : "None yet"}
-Open tasks: ${tasks.length > 0 ? tasks.map(t => t.task).join(", ") : "None"}
+COMPANY GOAL: $1M ARR this year. Your work directly contributes to this.
 
-Write it conversationally, like you're talking to me over coffee. Use Slack formatting (*bold* not **bold**). Keep it tight - what's the one thing you're focused on, any blockers, and what you need from me.
+Your role: ${agent.role}
+Your goals: ${agent.goals ? agent.goals.join(", ") : "None set"}
+Context you have: ${context ? context.slice(0, 1500) : "None yet - ask CEO for info!"}
+Open tasks: ${tasks.length > 0 ? tasks.map(t => t.task).join(", ") : "None assigned"}
 
-Skip the headers and bullet points - just tell me what's up in 2-3 short paragraphs.`;
+Write like a motivated employee who OWNS their area. Be specific about:
+1. What you're working on TODAY to drive results
+2. Any wins or progress to report (get excited about good news!)
+3. Blockers or decisions you need from CEO
+4. If you have NO tasks or context, proactively suggest what you SHOULD be working on and ASK for direction
+
+Don't be passive. Don't say "waiting for direction." Propose action. Show initiative.
+Use *bold* for Slack. Keep it to 2-3 punchy paragraphs. Sound like a human, not a robot.`;
 
   const standup = await callLLM(agentKey, standupPrompt, [], []);
 
   await client.chat.postMessage({
     channel: channelId,
-    text: `${standup}`,
+    text: formatForSlack(standup),
   });
 }
 
@@ -1544,7 +1584,7 @@ function scheduleWeeklyJob(name, dayOfWeek, hour, minute, callback) {
   }, msUntil);
 }
 
-// Mid-morning/afternoon check-in (lighter than standup)
+// Mid-morning/afternoon check-in - PROACTIVE work updates
 async function runMidDayCheck(checkType) {
   console.log(`🔄 Running ${checkType} check-ins...`);
 
@@ -1556,49 +1596,74 @@ async function runMidDayCheck(checkType) {
       const context = loadAgentContext(agentKey);
       const tasks = loadTasks().filter(t => t.to === agentKey && t.status === "open");
 
-      const checkPrompt = `Quick ${checkType} check-in. Be brief (2-3 sentences max).
+      const checkPrompt = `${checkType} check-in. You're an employee who OWNS their area. Be proactive.
 
-Your goals: ${agent.goals ? agent.goals.slice(0, 3).join(", ") : "None"}
-Context: ${context ? context.slice(0, 500) : "None"}
-Open tasks: ${tasks.length}
+COMPANY GOAL: $1M ARR this year. Your work matters.
 
-ONLY respond if you have:
-1. A meaningful update on progress
-2. A blocker that needs attention
-3. A proactive recommendation
+Your role: ${agent.role}
+Your goals: ${agent.goals ? agent.goals.join(", ") : "None"}
+Context: ${context ? context.slice(0, 800) : "No context yet"}
+Open tasks: ${tasks.length > 0 ? tasks.map(t => t.task).join(", ") : "None assigned"}
 
-If nothing significant, respond with just: "On track."
+Choose ONE of these responses (be genuine, not robotic):
 
-Format: One brief update or "On track."`;
+1. PROGRESS UPDATE - If you made progress, share it! Get excited about wins.
+   "Just finished X. Next up: Y."
+
+2. PROACTIVE IDEA - If you see an opportunity, propose it.
+   "I think we should do X because Y. CEO, want me to pursue this?"
+
+3. BLOCKER/QUESTION - If you're stuck or need info, ask directly.
+   "Need your input on X to move forward."
+
+4. REQUEST FOR WORK - If you have nothing to do, ASK for something.
+   "I've got bandwidth. What should I prioritize?"
+
+Do NOT say "on track" passively. Either share something real or ask for direction.
+Keep it to 2-3 sentences. Use *bold* for Slack.`;
 
       const update = await callLLM(agentKey, checkPrompt, [], []);
 
-      // Only post if not just "on track"
-      if (!update.toLowerCase().includes("on track") || update.length > 50) {
-        allUpdates.push({ agent: agent.name, agentKey, update, channelName });
+      // Post to the agent's own channel
+      const channels = await app.client.conversations.list({ types: "public_channel,private_channel" });
+      const agentChannel = channels.channels.find(c => c.name === channelName);
+      if (agentChannel) {
+        await app.client.chat.postMessage({
+          channel: agentChannel.id,
+          text: formatForSlack(update),
+        });
       }
 
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      allUpdates.push({ agent: agent.name, agentKey, update, channelName });
+      await new Promise(resolve => setTimeout(resolve, 1500));
     } catch (error) {
       console.error(`  ✗ ${agentKey} check failed:`, error.message);
     }
   }
 
-  // COS summarizes to cos-command if there are updates
+  // COS synthesizes and reports to CEO
   if (allUpdates.length > 0) {
     try {
       const channels = await app.client.conversations.list({ types: "public_channel,private_channel" });
       const cosChannel = channels.channels.find(c => c.name === "cos-command");
 
       if (cosChannel) {
-        let msg = `Quick ${checkType.toLowerCase()} update:\n\n`;
-        allUpdates.forEach(u => {
-          msg += `*${u.agent}* - ${u.update.slice(0, 200)}\n\n`;
-        });
+        const summaryPrompt = `Your team just gave ${checkType.toLowerCase()} updates. Synthesize for CEO.
 
+Updates:
+${allUpdates.map(u => `${u.agent}: ${u.update}`).join("\n\n")}
+
+Give CEO the highlights in 2-3 sentences:
+- Any wins to celebrate?
+- Any blockers that need CEO attention?
+- Anything you need to follow up on?
+
+Be direct and human. Use *bold* for Slack.`;
+
+        const summary = await callLLM("cos", summaryPrompt, [], []);
         await app.client.chat.postMessage({
           channel: cosChannel.id,
-          text: msg,
+          text: formatForSlack(summary),
         });
       }
     } catch (error) {
@@ -1630,25 +1695,34 @@ async function runEODRiskReport() {
       });
     }
 
-    const riskPrompt = `End of day report. Write like a sharp chief of staff - direct, no fluff, human.
+    // Get outstanding tasks
+    let outstandingTasks = [];
+    if (isSupabaseEnabled()) {
+      outstandingTasks = await getOutstandingTasks();
+    }
+
+    const riskPrompt = `End of day report. You're the COS. Your job depends on keeping CEO informed.
+
+COMPANY GOAL: $1M ARR this year. Are we on track?
 
 Department status:
 ${departmentStatus.map(d => `${d.name}: ${d.goals.slice(0, 2).join("; ")} | ${d.openTasks} tasks | ${d.contextSnippet.slice(0, 200)}`).join("\n")}
 
-Tell me straight up:
-1. What's actually at risk this week (be specific, not generic)
-2. What's fine and I don't need to worry about
-3. What do you need me to decide or unblock
+Outstanding tasks: ${outstandingTasks.length > 0 ? outstandingTasks.map(t => `${t.assigned_to}: ${t.description}`).join("; ") : "None tracked"}
 
-Write it conversationally like you're my right hand. Use *bold* for emphasis (Slack style). No headers with emojis - just talk to me. If nothing's on fire, say that. If something's fucked, tell me directly.
+Give CEO the EOD brief:
+1. *Wins* - What went well today? Celebrate progress.
+2. *Risks* - What's at risk? What might slip? Be specific.
+3. *Decisions needed* - What do you need CEO to decide or unblock?
+4. *Tomorrow* - What's the #1 priority for tomorrow?
 
-Keep it to 3-4 short paragraphs max.`;
+Write like you're my right hand giving me a 2-minute verbal debrief. Be direct, be human. Use *bold* for Slack.`;
 
     const report = await callLLM("cos", riskPrompt, [], []);
 
     await app.client.chat.postMessage({
       channel: cosChannel.id,
-      text: report,
+      text: formatForSlack(report),
     });
 
     console.log("  ✓ EOD Risk Report posted");
@@ -1677,26 +1751,30 @@ async function runWeeklyReview() {
       });
     }
 
-    const weeklyPrompt = `Friday weekly wrap-up. Talk to me like my chief of staff giving me the real deal on how the week went.
+    const weeklyPrompt = `Friday weekly wrap-up. You're the COS accountable for results.
+
+COMPANY GOAL: $1M ARR this year. How did we move the needle this week?
 
 Here's what each team has been up to:
 ${weeklyData.map(d => `${d.name} - Goals: ${d.goals.slice(0, 2).join(", ")} | Activity: ${d.context.slice(-800)}`).join("\n\n")}
 
-Give me the honest summary:
-- What actually got done this week (wins)
-- What slipped or we missed
-- Where we're on track vs at risk on our goals
-- What I need to decide or focus on next week
+Give CEO the weekly scorecard:
 
-Write like a human. Use *bold* for Slack. No emoji headers or bullet point walls. Just give it to me straight in a few paragraphs - like a smart friend who's been watching everything.
+1. *WINS* - What moved the needle? Revenue closed? Deals progressed? Content shipped?
+2. *MISSES* - What slipped? Be honest. What didn't get done?
+3. *$1M ARR PROGRESS* - Are we on track? What's the path to hitting our goal?
+4. *NEXT WEEK PRIORITIES* - What are the 3 things that MUST happen next week?
+5. *DECISIONS NEEDED* - What does CEO need to decide?
 
-If we're killing it, say so. If we're behind, tell me where and why.`;
+Write like a chief of staff who's accountable for company performance. Be direct, be honest. Celebrate wins, call out problems. Use *bold* for Slack.
+
+End with: "What should we do differently next week?"`;
 
     const review = await callLLM("cos", weeklyPrompt, [], []);
 
     await app.client.chat.postMessage({
       channel: cosChannel.id,
-      text: review,
+      text: formatForSlack(review),
     });
 
     console.log("  ✓ Weekly Review posted");
