@@ -295,6 +295,106 @@ async function updateDraftStatusCloud(draftId, status) {
 }
 
 /* ================================
+   TASK TRACKING (COS delegations)
+================================ */
+async function createTask(task) {
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from("tasks")
+    .insert({
+      description: task.description,
+      assigned_to: task.assignedTo,
+      assigned_by: task.assignedBy || "cos",
+      deadline: task.deadline || null,
+      deliverable: task.deliverable || null,
+      status: "pending",
+      created_at: new Date().toISOString()
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error("Failed to create task:", error.message);
+    return null;
+  }
+
+  console.log(`📋 Task created: ${task.description.slice(0, 50)}...`);
+  return data;
+}
+
+async function getTasks(filters = {}) {
+  if (!supabase) return [];
+
+  let query = supabase
+    .from("tasks")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (filters.status) {
+    query = query.eq("status", filters.status);
+  }
+  if (filters.assignedTo) {
+    query = query.eq("assigned_to", filters.assignedTo);
+  }
+  if (filters.limit) {
+    query = query.limit(filters.limit);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error("Failed to get tasks:", error.message);
+    return [];
+  }
+
+  return data || [];
+}
+
+async function getOutstandingTasks() {
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("*")
+    .in("status", ["pending", "in_progress"])
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    console.error("Failed to get outstanding tasks:", error.message);
+    return [];
+  }
+
+  return data || [];
+}
+
+async function updateTaskStatus(taskId, status, notes = null) {
+  if (!supabase) return false;
+
+  const update = {
+    status,
+    updated_at: new Date().toISOString()
+  };
+  if (notes) update.notes = notes;
+
+  const { error } = await supabase
+    .from("tasks")
+    .update(update)
+    .eq("id", taskId);
+
+  if (error) {
+    console.error("Failed to update task:", error.message);
+    return false;
+  }
+
+  return true;
+}
+
+async function completeTask(taskId, notes = null) {
+  return updateTaskStatus(taskId, "completed", notes);
+}
+
+/* ================================
    KEY FACTS (auto-extracted memories)
 ================================ */
 async function saveKeyFact(agentKey, fact, source = "conversation") {
@@ -390,10 +490,26 @@ CREATE TABLE IF NOT EXISTS key_facts (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Tasks (COS delegations with tracking)
+CREATE TABLE IF NOT EXISTS tasks (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  description TEXT NOT NULL,
+  assigned_to TEXT NOT NULL,
+  assigned_by TEXT DEFAULT 'cos',
+  deadline TEXT,
+  deliverable TEXT,
+  status TEXT DEFAULT 'pending',
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ
+);
+
 -- Create indexes
 CREATE INDEX IF NOT EXISTS idx_drafts_agent ON drafts(agent_key);
 CREATE INDEX IF NOT EXISTS idx_drafts_status ON drafts(status);
 CREATE INDEX IF NOT EXISTS idx_key_facts_agent ON key_facts(agent_key);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON tasks(assigned_to);
 
 -- Vector similarity search function
 CREATE OR REPLACE FUNCTION match_documents (
@@ -444,5 +560,10 @@ module.exports = {
   updateDraftStatusCloud,
   saveKeyFact,
   getKeyFacts,
+  createTask,
+  getTasks,
+  getOutstandingTasks,
+  updateTaskStatus,
+  completeTask,
   getSetupSQL,
 };

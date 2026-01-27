@@ -19,6 +19,11 @@ const {
   saveDocument,
   searchDocuments,
   listDocuments,
+  createTask,
+  getTasks,
+  getOutstandingTasks,
+  updateTaskStatus,
+  completeTask,
 } = require("./supabase");
 
 const {
@@ -708,6 +713,24 @@ async function buildConversationContext(history, agentKey, userQuery = "") {
     context += `## YOUR CURRENT GOALS\n${agent.goals.map((g, i) => `${i + 1}. ${g}`).join("\n")}\n\n`;
   }
 
+  // For COS: Add outstanding tasks (this is critical for task tracking)
+  if (agentKey === "cos" && isSupabaseEnabled()) {
+    try {
+      const outstandingTasks = await getOutstandingTasks();
+      if (outstandingTasks && outstandingTasks.length > 0) {
+        context += "## OUTSTANDING TASKS (you assigned these - track them!)\n";
+        for (const task of outstandingTasks) {
+          const deadline = task.deadline ? ` | Due: ${task.deadline}` : "";
+          const deliverable = task.deliverable ? ` | Deliverable: ${task.deliverable}` : "";
+          context += `- [${task.status.toUpperCase()}] → ${AGENTS[task.assigned_to]?.name || task.assigned_to}: ${task.description}${deadline}${deliverable}\n`;
+        }
+        context += "\n";
+      }
+    } catch (e) {
+      // Silently fail
+    }
+  }
+
   // Add stored knowledge
   if (agentContext) {
     context += `## STORED CONTEXT (You know this - don't ask again)\n${agentContext}\n\n`;
@@ -867,6 +890,64 @@ Return as bullet points. Be concise.`;
 }
 
 /* ================================
+   AUTO-EXTRACT TASKS FROM COS
+================================ */
+async function extractAndCreateTasks(cosResponse, userRequest) {
+  if (!isSupabaseEnabled()) return;
+
+  const extractPrompt = `Analyze this COS response and extract any task delegations.
+
+USER REQUEST: "${userRequest}"
+
+COS RESPONSE: "${cosResponse}"
+
+If the COS delegated work to a department, extract:
+1. assigned_to: The agent key (one of: fundraising, revenue, product_cs, ops, deals, relationships, content)
+2. description: What task was assigned (be specific)
+3. deadline: Any mentioned deadline/timeline (e.g., "by end of day", "within the hour", "by 3pm")
+4. deliverable: What the output should be (e.g., "draft email", "research report", "analysis")
+
+Respond in this EXACT JSON format (or "NONE" if no delegation):
+{"tasks": [{"assigned_to": "agent_key", "description": "task description", "deadline": "deadline or null", "deliverable": "deliverable or null"}]}
+
+Only extract if COS clearly delegated/assigned/routed something. Don't extract if COS just discussed something.`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: "claude-sonnet-4-5-20250929",
+      max_tokens: 500,
+      messages: [{ role: "user", content: extractPrompt }],
+    });
+
+    const result = response.content[0].text.trim();
+    if (result && result !== "NONE" && result.toLowerCase() !== "none") {
+      try {
+        const parsed = JSON.parse(result);
+        if (parsed.tasks && parsed.tasks.length > 0) {
+          for (const task of parsed.tasks) {
+            // Validate agent key
+            if (AGENTS[task.assigned_to]) {
+              await createTask({
+                description: task.description,
+                assignedTo: task.assigned_to,
+                assignedBy: "cos",
+                deadline: task.deadline,
+                deliverable: task.deliverable,
+              });
+              console.log(`  📋 Task created for ${task.assigned_to}`);
+            }
+          }
+        }
+      } catch (parseErr) {
+        // JSON parsing failed, skip
+      }
+    }
+  } catch (error) {
+    console.error("Task extraction error:", error.message);
+  }
+}
+
+/* ================================
    COMMAND HANDLERS
 ================================ */
 async function handleCommands(text, agentKey, say, client, channelId) {
@@ -922,6 +1003,50 @@ async function handleCommands(text, agentKey, say, client, channelId) {
   // Standup command
   if (lowerText.match(/^(standup|daily standup|status)$/)) {
     await runStandup(agentKey, client, channelId);
+    return true;
+  }
+
+  // Task commands (COS only)
+  if (lowerText.match(/^(tasks?|outstanding|what'?s outstanding|open tasks?|priorities|what am i waiting (on|for))$/)) {
+    if (!isSupabaseEnabled()) {
+      await say("Task tracking requires Supabase. Using conversation memory only.");
+      return true;
+    }
+    const tasks = await getOutstandingTasks();
+    if (tasks.length === 0) {
+      await say("No outstanding tasks. Everything's either done or nothing's been assigned yet.");
+    } else {
+      let msg = `*Outstanding Tasks (${tasks.length})*\n\n`;
+      for (const task of tasks) {
+        const agentName = AGENTS[task.assigned_to]?.name || task.assigned_to;
+        const deadline = task.deadline ? ` — Due: *${task.deadline}*` : "";
+        const status = task.status === "in_progress" ? "🔄" : "⏳";
+        msg += `${status} *${agentName}*: ${task.description}${deadline}\n`;
+      }
+      await say(msg);
+    }
+    return true;
+  }
+
+  // Complete a task
+  const completeMatch = lowerText.match(/^(complete|done|finished|mark done)\s+(.+)$/);
+  if (completeMatch) {
+    if (!isSupabaseEnabled()) {
+      await say("Task tracking requires Supabase.");
+      return true;
+    }
+    const searchTerm = completeMatch[2];
+    const tasks = await getOutstandingTasks();
+    const matchingTask = tasks.find(t =>
+      t.description.toLowerCase().includes(searchTerm) ||
+      t.assigned_to.toLowerCase().includes(searchTerm)
+    );
+    if (matchingTask) {
+      await completeTask(matchingTask.id);
+      await say(`Marked complete: "${matchingTask.description.slice(0, 50)}..."`);
+    } else {
+      await say(`No matching task found for "${searchTerm}". Say "tasks" to see outstanding items.`);
+    }
     return true;
   }
 
@@ -1338,6 +1463,11 @@ app.event("app_mention", async ({ event, say, client }) => {
 
     addToConversation(channelName, "assistant", reply);
     extractAndSaveKeyFacts(agentKey, userMessage).catch(() => {});
+
+    // If COS responded, check for task delegations
+    if (agentKey === "cos") {
+      extractAndCreateTasks(reply, userMessage).catch(() => {});
+    }
 
     // Delete thinking
     await client.chat.delete({ channel: event.channel, ts: thinkingMsg.ts });
