@@ -4,6 +4,7 @@ const { AGENTS } = require("../config/agents");
 const { CHANNEL_AGENT_MAP } = require("../config/channels");
 const { askClaude } = require("../services/claude");
 const { askGemini, isGeminiAvailable } = require("../services/gemini");
+const { askConsensus } = require("../services/consensus");
 const { logEvent } = require("../services/memory");
 const { handleCOSRouting } = require("./routing");
 
@@ -11,12 +12,23 @@ function cleanText(text) {
   return text.replace(/<@.*?>/g, "").trim();
 }
 
-// Default to Claude, but can switch per-agent or per-request
-async function getAIResponse(agent, userText, provider = "claude") {
-  if (provider === "gemini" && isGeminiAvailable()) {
-    return askGemini(agent.systemPrompt, userText);
+// Route to appropriate provider based on agent config
+async function getAIResponse(agent, userText) {
+  const provider = agent.provider || "claude";
+
+  switch (provider) {
+    case "consensus":
+      return askConsensus(agent.systemPrompt, userText);
+    case "gemini":
+      if (isGeminiAvailable()) {
+        return askGemini(agent.systemPrompt, userText);
+      }
+      console.log(`[${agent.name}] Gemini unavailable, falling back to Claude`);
+      return askClaude(agent.systemPrompt, userText);
+    case "claude":
+    default:
+      return askClaude(agent.systemPrompt, userText);
   }
-  return askClaude(agent.systemPrompt, userText);
 }
 
 function registerMentionHandler(app) {
@@ -49,7 +61,8 @@ function registerMentionHandler(app) {
     const result = await getAIResponse(agent, text);
 
     if (result.success) {
-      await say(`*${agent.name}*\n_${agent.role}_\n\n${result.text}`);
+      const consensusTag = result.consensus ? " [consensus]" : "";
+      await say(`*${agent.name}*${consensusTag}\n_${agent.role}_\n\n${result.text}`);
     } else {
       await say(`*${agent.name}* encountered an error: ${result.error}`);
     }
