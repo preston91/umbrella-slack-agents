@@ -6,6 +6,7 @@ const { askClaude } = require("../services/claude");
 const { askGemini, isGeminiAvailable } = require("../services/gemini");
 const { askConsensus } = require("../services/consensus");
 const { logEvent, getConversation, appendMessage } = require("../services/memory");
+const { processFiles } = require("../services/files");
 const { handleCOSRouting } = require("./routing");
 
 function cleanText(text) {
@@ -48,9 +49,19 @@ function registerMentionHandler(app) {
     const agent = AGENTS[agentKey];
     const text = cleanText(event.text);
 
+    // Process any attached files (images, PDFs, etc.)
+    const botToken = process.env.SLACK_BOT_TOKEN;
+    const fileData = await processFiles(event.files, botToken);
+
+    // Build text content (include extracted file text)
+    let fullText = text;
+    if (fileData && fileData.texts.length > 0) {
+      fullText = text + "\n\n" + fileData.texts.join("\n\n");
+    }
+
     // Log user message to conversation history
-    await appendMessage(channelName, "user", text, null);
-    console.log(`[${agentKey}] #${channelName}: ${text}`);
+    await appendMessage(channelName, "user", fullText, null);
+    console.log(`[${agentKey}] #${channelName}: ${text}${fileData ? ` (+${event.files?.length || 0} files)` : ""}`);
 
     // COS routing for "assign X: task" commands
     if (agentKey === "cos") {
@@ -68,9 +79,21 @@ function registerMentionHandler(app) {
       content: msg.content,
     }));
 
-    // Make sure the current message is included (in case logging was slow)
-    if (messages.length === 0 || messages[messages.length - 1].content !== text) {
-      messages.push({ role: "user", content: text });
+    // Build current message content (may include images for vision)
+    let currentContent;
+    if (fileData && fileData.images.length > 0) {
+      // Multi-modal content with images for Claude vision
+      currentContent = [
+        { type: "text", text: fullText || "Please analyze these images:" },
+        ...fileData.images,
+      ];
+    } else {
+      currentContent = fullText;
+    }
+
+    // Make sure the current message is included
+    if (messages.length === 0 || messages[messages.length - 1].content !== fullText) {
+      messages.push({ role: "user", content: currentContent });
     }
 
     // Get AI response with full conversation context
