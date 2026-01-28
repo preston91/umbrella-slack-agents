@@ -9,6 +9,8 @@ const REQUIRED_ENV = [
 
 const OPTIONAL_ENV = [
   "GEMINI_API_KEY",
+  "SUPABASE_URL",
+  "SUPABASE_SERVICE_KEY",
 ];
 
 function validateEnv() {
@@ -38,6 +40,10 @@ function validateEnv() {
     },
     gemini: {
       apiKey: process.env.GEMINI_API_KEY || null,
+    },
+    supabase: {
+      url: process.env.SUPABASE_URL || null,
+      serviceKey: process.env.SUPABASE_SERVICE_KEY || null,
     },
   };
 }

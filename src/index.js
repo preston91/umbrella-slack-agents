@@ -4,9 +4,9 @@ require("dotenv").config();
 
 const { App } = require("@slack/bolt");
 const { validateEnv } = require("./utils/env");
-const { initClaude } = require("./services/claude");
+const { initClaude, askClaude } = require("./services/claude");
 const { initGemini } = require("./services/gemini");
-const { askClaude } = require("./services/claude");
+const { initSupabase } = require("./services/supabase");
 const { getSummaryData, clearAll } = require("./services/memory");
 const { registerMentionHandler } = require("./handlers/mentions");
 
@@ -16,6 +16,9 @@ const env = validateEnv();
 // Initialize AI clients
 initClaude(env.anthropic.apiKey);
 initGemini(env.gemini.apiKey);
+
+// Initialize Supabase (optional - falls back to in-memory)
+initSupabase(env.supabase.url, env.supabase.serviceKey);
 
 // Initialize Slack app
 const app = new App({
@@ -32,7 +35,7 @@ registerMentionHandler(app);
 const DAILY_MS = 1000 * 60 * 60 * 24;
 
 setInterval(async () => {
-  const { events, tasks } = getSummaryData();
+  const { events, tasks } = await getSummaryData();
 
   if (events.length === 0 && tasks.length === 0) {
     return; // Nothing to summarize
@@ -44,7 +47,7 @@ Events:
 ${events.map((e) => `- ${e.channel}: ${e.text}`).join("\n") || "None"}
 
 Tasks:
-${tasks.map((t) => `- ${t.to}: ${t.task}`).join("\n") || "None"}`;
+${tasks.map((t) => `- ${t.to_agent || t.to}: ${t.task}`).join("\n") || "None"}`;
 
   const result = await askClaude(
     "You are the Chief of Staff. Provide a concise daily summary.",
