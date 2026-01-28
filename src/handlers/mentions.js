@@ -57,8 +57,21 @@ function registerMentionHandler(app) {
       if (routed) return;
     }
 
+    // Show thinking indicator
+    const thinkingMsg = await say(`_${agent.name} is thinking..._`);
+
     // Get AI response
     const result = await getAIResponse(agent, text);
+
+    // Delete thinking message
+    try {
+      await client.chat.delete({
+        channel: event.channel,
+        ts: thinkingMsg.ts,
+      });
+    } catch (e) {
+      // Ignore if we can't delete (missing permissions)
+    }
 
     if (result.success) {
       const consensusTag = result.consensus ? " [consensus]" : "";
