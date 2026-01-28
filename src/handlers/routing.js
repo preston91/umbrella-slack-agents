@@ -24,7 +24,7 @@ async function handleCOSRouting(text, client, say) {
     return true;
   }
 
-  logTask("COS", targetKey, task);
+  await logTask("COS", targetKey, task);
 
   try {
     await client.chat.postMessage({

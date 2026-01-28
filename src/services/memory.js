@@ -1,76 +1,128 @@
 // src/services/memory.js
-// Unified memory interface - uses Supabase if available, falls back to in-memory
+// Unified memory interface - uses Supabase when available
 
 const supabase = require("./supabase");
 
-// In-memory fallback store
+// In-memory fallback
 const store = {
-  events: [],
+  conversations: {},
   tasks: [],
 };
 
-async function logEvent(channel, agent, text) {
+// ========== LOGGING EVENTS (uses conversations table) ==========
+
+async function logEvent(channelName, agentKey, text, role = "user") {
   if (supabase.isSupabaseAvailable()) {
-    await supabase.logEvent(channel, agent, text);
+    await supabase.appendMessage(channelName, role, text, agentKey);
   } else {
-    store.events.push({
-      channel,
-      agent,
-      text,
-      time: new Date().toISOString(),
+    if (!store.conversations[channelName]) {
+      store.conversations[channelName] = [];
+    }
+    store.conversations[channelName].push({
+      role,
+      content: text,
+      agent: agentKey,
+      timestamp: new Date().toISOString(),
     });
   }
 }
 
-async function logTask(from, to, task) {
+// ========== TASKS ==========
+
+async function logTask(from, to, taskDescription) {
   if (supabase.isSupabaseAvailable()) {
-    await supabase.logTask(from, to, task);
+    await supabase.createTask({
+      description: taskDescription,
+      assignedTo: to,
+      assignedBy: from,
+    });
   } else {
     store.tasks.push({
-      from,
-      to,
-      task,
-      time: new Date().toISOString(),
+      description: taskDescription,
+      assigned_to: to,
+      assigned_by: from,
+      status: "pending",
+      created_at: new Date().toISOString(),
     });
   }
 }
 
-async function getEvents() {
+async function getTasks(status = null, assignedTo = null) {
   if (supabase.isSupabaseAvailable()) {
-    return supabase.getRecentEvents(24);
+    return supabase.getTasks(status, assignedTo);
   }
-  return [...store.events];
+  let tasks = [...store.tasks];
+  if (status) tasks = tasks.filter(t => t.status === status);
+  if (assignedTo) tasks = tasks.filter(t => t.assigned_to === assignedTo);
+  return tasks;
 }
 
-async function getTasks() {
+// ========== SUMMARY ==========
+
+async function getSummaryData(hours = 24) {
   if (supabase.isSupabaseAvailable()) {
-    return supabase.getRecentTasks(24);
+    return supabase.getSummaryData(hours);
   }
-  return [...store.tasks];
+
+  // In-memory fallback
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+  const events = [];
+
+  for (const [channel, messages] of Object.entries(store.conversations)) {
+    for (const msg of messages) {
+      if (new Date(msg.timestamp) >= since) {
+        events.push({
+          channel,
+          agent: msg.agent,
+          text: msg.content,
+          time: msg.timestamp,
+        });
+      }
+    }
+  }
+
+  const tasks = store.tasks.filter(t => new Date(t.created_at) >= since);
+
+  return { events, tasks };
 }
 
-async function getSummaryData() {
-  if (supabase.isSupabaseAvailable()) {
-    return supabase.getSummaryData(24);
-  }
-  return {
-    events: [...store.events],
-    tasks: [...store.tasks],
-  };
-}
+// ========== CLEAR (in-memory only) ==========
 
 function clearAll() {
-  // Only clears in-memory store
-  // Supabase keeps history (use clearOldData for cleanup)
-  store.events = [];
+  store.conversations = {};
   store.tasks = [];
 }
 
+// ========== RE-EXPORT SUPABASE FUNCTIONS ==========
+// So handlers can use them directly if needed
+
+const {
+  getConversation,
+  appendMessage,
+  getAgentContext,
+  setAgentContext,
+  addKeyFact,
+  getKeyFacts,
+  createDraft,
+  getDrafts,
+  updateTaskStatus,
+} = supabase;
+
 module.exports = {
+  // Core logging
   logEvent,
   logTask,
-  getEvents,
   getTasks,
-  clearAll,
   getSummaryData,
+  clearAll,
+  // Supabase passthrough
+  getConversation,
+  appendMessage,
+  getAgentContext,
+  setAgentContext,
+  addKeyFact,
+  getKeyFacts,
+  createDraft,
+  getDrafts,
+  updateTaskStatus,
 };

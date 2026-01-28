@@ -47,7 +47,7 @@ Events:
 ${events.map((e) => `- ${e.channel}: ${e.text}`).join("\n") || "None"}
 
 Tasks:
-${tasks.map((t) => `- ${t.to_agent || t.to}: ${t.task}`).join("\n") || "None"}`;
+${tasks.map((t) => `- ${t.assigned_to}: ${t.description} [${t.status}]`).join("\n") || "None"}`;
 
   const result = await askClaude(
     "You are the Chief of Staff. Provide a concise daily summary.",
