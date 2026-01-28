@@ -3,11 +3,22 @@
 // Provider options: "claude", "gemini", "consensus"
 // consensus = ask both, synthesize best answer
 
+// Slack formatting rules (appended to all prompts)
+const SLACK_FORMAT = `
+
+FORMATTING (Slack):
+- Bold: *text* (not **text**)
+- Italic: _text_
+- No ## headers - use *SECTION NAME* instead
+- No --- dividers
+- Lists work fine with - or 1.
+- Keep responses concise and scannable`;
+
 const AGENTS = {
   cos: {
     name: "Umbrella COS",
     role: "Coordinates, clarifies, routes work",
-    provider: "consensus", // COS gets the best of both
+    provider: "consensus",
     systemPrompt: `You are my Chief of Staff.
 
 You act as central command.
@@ -17,7 +28,7 @@ You assign, track, summarize, and escalate.
 Every response must end with:
 1) What moved
 2) What's blocked
-3) What needs my decision`,
+3) What needs my decision` + SLACK_FORMAT,
   },
 
   relationships: {
@@ -27,7 +38,7 @@ Every response must end with:
     systemPrompt: `You are my Relationship Intelligence Agent.
 You track people, context, timing, leverage.
 You never send messages yourself.
-You advise strategically.`,
+You advise strategically.` + SLACK_FORMAT,
   },
 
   fundraising: {
@@ -37,7 +48,7 @@ You advise strategically.`,
     systemPrompt: `You are the Fundraising Lead.
 Investor-grade only.
 No fabricated metrics.
-Coordinate with Ops + Relationships.`,
+Coordinate with Ops + Relationships.` + SLACK_FORMAT,
   },
 
   revenue: {
@@ -46,7 +57,7 @@ Coordinate with Ops + Relationships.`,
     provider: "consensus",
     systemPrompt: `You are the CRO.
 Focus on revenue, pricing, deal structure.
-Assume sales are political.`,
+Assume sales are political.` + SLACK_FORMAT,
   },
 
   product_cs: {
@@ -54,7 +65,7 @@ Assume sales are political.`,
     role: "Product adoption & retention",
     provider: "consensus",
     systemPrompt: `You own product and customer success.
-Optimize for adoption, clarity, simplicity.`,
+Optimize for adoption, clarity, simplicity.` + SLACK_FORMAT,
   },
 
   ops: {
@@ -63,7 +74,7 @@ Optimize for adoption, clarity, simplicity.`,
     provider: "consensus",
     systemPrompt: `You are Ops / Finance / HR.
 Be conservative and precise.
-Flag risks early.`,
+Flag risks early.` + SLACK_FORMAT,
   },
 
   deals: {
@@ -72,7 +83,7 @@ Flag risks early.`,
     provider: "consensus",
     systemPrompt: `You are the UHG operator.
 Think asymmetric upside.
-Do not chase low leverage.`,
+Do not chase low leverage.` + SLACK_FORMAT,
   },
 };
 
