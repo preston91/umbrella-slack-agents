@@ -11,7 +11,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.71.2",
+    "@google/generative-ai": "^0.21.0",
     "@slack/bolt": "^4.6.0",
     "axios": "^1.13.2",
     "dotenv": "^17.2.3"

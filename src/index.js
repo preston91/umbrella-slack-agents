@@ -1,7 +1,7 @@
 // src/index.js
 
 const { App } = require("@slack/bolt");
-const Anthropic = require("@anthropic-ai/sdk");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 require("dotenv").config();
 
 /* --------------------------------
@@ -14,9 +14,7 @@ const app = new App({
   appToken: process.env.SLACK_APP_TOKEN,
 });
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
 
 /* --------------------------------
    MEMORY (IN-MEMORY, SIMPLE + SAFE)
@@ -122,22 +120,16 @@ const CHANNEL_AGENT_MAP = {
 const cleanText = (text) =>
   text.replace(/<@.*?>/g, "").trim();
 
-async function callClaude(agentKey, userText) {
+async function callGemini(agentKey, userText) {
   const agent = AGENTS[agentKey];
 
-  const response = await anthropic.messages.create({
-    model:"claude-sonnet-4-5-20250929",
-    max_tokens: 600,
-    system: agent.systemPrompt,
-    messages: [
-      {
-        role: "user",
-        content: userText,
-      },
-    ],
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-flash",
+    systemInstruction: agent.systemPrompt,
   });
 
-  return response.content[0].text;
+  const result = await model.generateContent(userText);
+  return result.response.text();
 }
 
 /* --------------------------------
@@ -204,7 +196,7 @@ app.event("app_mention", async ({ event, say, client }) => {
     if (routed) return;
   }
 
-  const reply = await callClaude(agentKey, text);
+  const reply = await callGemini(agentKey, text);
 
   await say(`🧠 *${agent.name} online*\n_${agent.role}_\n\n${reply}`);
 });
@@ -223,7 +215,7 @@ Tasks:
 ${MEMORY.tasks.map(t => `- ${t.to}: ${t.task}`).join("\n")}
 `;
 
-  const summary = await callClaude("cos", summaryPrompt);
+  const summary = await callGemini("cos", summaryPrompt);
 
   await app.client.chat.postMessage({
     channel: "#cos-command",
