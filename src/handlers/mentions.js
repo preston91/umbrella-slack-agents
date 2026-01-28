@@ -5,7 +5,7 @@ const { CHANNEL_AGENT_MAP } = require("../config/channels");
 const { askClaude } = require("../services/claude");
 const { askGemini, isGeminiAvailable } = require("../services/gemini");
 const { askConsensus } = require("../services/consensus");
-const { logEvent } = require("../services/memory");
+const { logEvent, getConversation, appendMessage } = require("../services/memory");
 const { handleCOSRouting } = require("./routing");
 
 function cleanText(text) {
@@ -13,21 +13,21 @@ function cleanText(text) {
 }
 
 // Route to appropriate provider based on agent config
-async function getAIResponse(agent, userText) {
+async function getAIResponse(agent, messages) {
   const provider = agent.provider || "claude";
 
   switch (provider) {
     case "consensus":
-      return askConsensus(agent.systemPrompt, userText);
+      return askConsensus(agent.systemPrompt, messages);
     case "gemini":
       if (isGeminiAvailable()) {
-        return askGemini(agent.systemPrompt, userText);
+        return askGemini(agent.systemPrompt, messages);
       }
       console.log(`[${agent.name}] Gemini unavailable, falling back to Claude`);
-      return askClaude(agent.systemPrompt, userText);
+      return askClaude(agent.systemPrompt, messages);
     case "claude":
     default:
-      return askClaude(agent.systemPrompt, userText);
+      return askClaude(agent.systemPrompt, messages);
   }
 }
 
@@ -48,7 +48,8 @@ function registerMentionHandler(app) {
     const agent = AGENTS[agentKey];
     const text = cleanText(event.text);
 
-    logEvent(channelName, agentKey, text);
+    // Log user message to conversation history
+    await appendMessage(channelName, "user", text, null);
     console.log(`[${agentKey}] #${channelName}: ${text}`);
 
     // COS routing for "assign X: task" commands
@@ -60,8 +61,20 @@ function registerMentionHandler(app) {
     // Show thinking indicator
     const thinkingMsg = await say(`_${agent.name} is thinking..._`);
 
-    // Get AI response
-    const result = await getAIResponse(agent, text);
+    // Fetch conversation history and build messages array
+    const history = await getConversation(channelName);
+    const messages = history.slice(-20).map((msg) => ({
+      role: msg.role === "user" ? "user" : "assistant",
+      content: msg.content,
+    }));
+
+    // Make sure the current message is included (in case logging was slow)
+    if (messages.length === 0 || messages[messages.length - 1].content !== text) {
+      messages.push({ role: "user", content: text });
+    }
+
+    // Get AI response with full conversation context
+    const result = await getAIResponse(agent, messages);
 
     // Delete thinking message
     try {
@@ -74,6 +87,9 @@ function registerMentionHandler(app) {
     }
 
     if (result.success) {
+      // Log bot response to conversation history
+      await appendMessage(channelName, "assistant", result.text, agentKey);
+
       const consensusTag = result.consensus ? " [consensus]" : "";
       await say(`*${agent.name}*${consensusTag}\n_${agent.role}_\n\n${result.text}`);
     } else {

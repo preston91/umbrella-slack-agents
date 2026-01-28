@@ -16,7 +16,7 @@ function isGeminiAvailable() {
   return client !== null;
 }
 
-async function askGemini(systemPrompt, userText, options = {}) {
+async function askGemini(systemPrompt, userTextOrMessages, options = {}) {
   if (!client) {
     throw new Error("Gemini client not initialized or API key not provided.");
   }
@@ -25,11 +25,25 @@ async function askGemini(systemPrompt, userText, options = {}) {
     model = "gemini-1.5-flash",
   } = options;
 
+  // Convert to Gemini format
+  let contents;
+  if (typeof userTextOrMessages === "string") {
+    contents = [{ role: "user", parts: [{ text: userTextOrMessages }] }];
+  } else if (Array.isArray(userTextOrMessages)) {
+    // Convert from Claude format {role, content} to Gemini format {role, parts}
+    contents = userTextOrMessages.map((msg) => ({
+      role: msg.role === "assistant" ? "model" : "user",
+      parts: [{ text: msg.content }],
+    }));
+  } else {
+    contents = [{ role: "user", parts: [{ text: String(userTextOrMessages) }] }];
+  }
+
   try {
     const genModel = client.getGenerativeModel({ model });
 
     const result = await genModel.generateContent({
-      contents: [{ role: "user", parts: [{ text: userText }] }],
+      contents,
       systemInstruction: { parts: [{ text: systemPrompt }] },
     });
 

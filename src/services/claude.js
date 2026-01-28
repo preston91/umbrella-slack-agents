@@ -8,22 +8,32 @@ function initClaude(apiKey) {
   client = new Anthropic({ apiKey });
 }
 
-async function askClaude(systemPrompt, userText, options = {}) {
+async function askClaude(systemPrompt, userTextOrMessages, options = {}) {
   if (!client) {
     throw new Error("Claude client not initialized. Call initClaude() first.");
   }
 
   const {
     model = "claude-sonnet-4-5-20250929",
-    maxTokens = 600,
+    maxTokens = 1200,
   } = options;
+
+  // Support both single string and messages array
+  let messages;
+  if (typeof userTextOrMessages === "string") {
+    messages = [{ role: "user", content: userTextOrMessages }];
+  } else if (Array.isArray(userTextOrMessages)) {
+    messages = userTextOrMessages;
+  } else {
+    messages = [{ role: "user", content: String(userTextOrMessages) }];
+  }
 
   try {
     const response = await client.messages.create({
       model,
       max_tokens: maxTokens,
       system: systemPrompt,
-      messages: [{ role: "user", content: userText }],
+      messages,
     });
 
     return {

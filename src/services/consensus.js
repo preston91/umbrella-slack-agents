@@ -16,7 +16,7 @@ Your job is to:
 Do NOT mention that there were two responses or that you're synthesizing.
 Just provide the best unified answer.`;
 
-async function askConsensus(systemPrompt, userText, options = {}) {
+async function askConsensus(systemPrompt, userTextOrMessages, options = {}) {
   const {
     synthesizer = "claude", // which model synthesizes the final answer
   } = options;
@@ -24,14 +24,14 @@ async function askConsensus(systemPrompt, userText, options = {}) {
   // If Gemini isn't available, just use Claude
   if (!isGeminiAvailable()) {
     console.log("[consensus] Gemini unavailable, falling back to Claude only");
-    return askClaude(systemPrompt, userText);
+    return askClaude(systemPrompt, userTextOrMessages);
   }
 
   // Ask both in parallel
   console.log("[consensus] Querying Claude and Gemini in parallel...");
   const [claudeResult, geminiResult] = await Promise.all([
-    askClaude(systemPrompt, userText),
-    askGemini(systemPrompt, userText),
+    askClaude(systemPrompt, userTextOrMessages),
+    askGemini(systemPrompt, userTextOrMessages),
   ]);
 
   // If one failed, return the other
@@ -57,9 +57,20 @@ async function askConsensus(systemPrompt, userText, options = {}) {
   // Both succeeded - synthesize
   console.log("[consensus] Both responded, synthesizing...");
 
+  // Get the last user message for synthesis context
+  let lastUserMessage;
+  if (typeof userTextOrMessages === "string") {
+    lastUserMessage = userTextOrMessages;
+  } else if (Array.isArray(userTextOrMessages)) {
+    const lastMsg = userTextOrMessages.filter(m => m.role === "user").pop();
+    lastUserMessage = lastMsg ? lastMsg.content : "See conversation above";
+  } else {
+    lastUserMessage = String(userTextOrMessages);
+  }
+
   const synthesisInput = `Original system context: ${systemPrompt}
 
-User question: ${userText}
+User's latest question: ${lastUserMessage}
 
 ---
 
