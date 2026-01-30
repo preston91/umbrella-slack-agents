@@ -36,6 +36,10 @@ function registerMentionHandler(app) {
   app.event("app_mention", async ({ event, say, client }) => {
     let channelName = "unknown";
 
+    // Debug: Log event structure
+    console.log("[DEBUG] app_mention event.files:", event.files);
+    console.log("[DEBUG] event keys:", Object.keys(event));
+
     try {
       const channelInfo = await client.conversations.info({
         channel: event.channel,
@@ -51,7 +55,36 @@ function registerMentionHandler(app) {
 
     // Process any attached files (images, PDFs, etc.)
     const botToken = process.env.SLACK_BOT_TOKEN;
-    const fileData = await processFiles(event.files, botToken);
+
+    // Files might be in event.files OR we need to fetch the message
+    let files = event.files;
+
+    // If no files in event, try fetching the full message
+    if (!files || files.length === 0) {
+      try {
+        console.log("[DEBUG] No files in event, checking message...");
+        const result = await client.conversations.history({
+          channel: event.channel,
+          latest: event.ts,
+          inclusive: true,
+          limit: 1,
+        });
+        if (result.messages && result.messages[0]) {
+          const msg = result.messages[0];
+          console.log("[DEBUG] Message from history:", JSON.stringify(msg, null, 2));
+          if (msg.files) {
+            files = msg.files;
+            console.log("[DEBUG] Found files in message:", files.length);
+          }
+        }
+      } catch (e) {
+        console.log("[DEBUG] Could not fetch message:", e.message);
+      }
+    }
+
+    console.log("[DEBUG] Final files array:", files);
+    const fileData = await processFiles(files, botToken);
+    console.log("[DEBUG] processFiles result:", JSON.stringify(fileData, null, 2));
 
     // Build text content (include extracted file text)
     let fullText = text;
