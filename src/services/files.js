@@ -71,8 +71,13 @@ async function processFiles(files, botToken) {
       // PDF - extract text
       const text = await extractPdfText(buffer);
       if (text) {
-        results.texts.push(`[PDF: ${fileName}]\n${text}`);
-        console.log(`[files] PDF text extracted: ${fileName}`);
+        const pdfContent = `[PDF: ${fileName}]\n${text}`;
+        results.texts.push(pdfContent);
+        console.log(`[files] PDF text extracted: ${fileName} (${text.length} chars)`);
+        // Log first 500 chars to verify content
+        console.log(`[files] PDF preview: ${text.substring(0, 500)}...`);
+      } else {
+        console.log(`[files] PDF extraction returned null/empty for: ${fileName}`);
       }
     } else if (mimeType.startsWith("text/") || fileName.endsWith(".txt") || fileName.endsWith(".md")) {
       // Plain text file

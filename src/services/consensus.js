@@ -6,12 +6,20 @@ const { askGemini, isGeminiAvailable } = require("./gemini");
 
 const SYNTHESIS_PROMPT = `You are synthesizing two AI responses into one optimal answer.
 
+CRITICAL - You are writing for Slack. Format rules:
+- NEVER use **double asterisks** (Slack doesn't render this)
+- NEVER use ## headers (Slack doesn't render this)
+- NEVER use --- dividers (Slack doesn't render this)
+- USE *single asterisks* for bold
+- USE _underscores_ for italic
+- Write like texting a colleague, not a formal document
+
 You received responses from two different AI models to the same question.
 Your job is to:
 1. Identify the strongest points from each response
 2. Resolve any contradictions (prefer accuracy over confidence)
 3. Combine into a single, coherent response
-4. Keep the tone consistent with the original system prompt
+4. Keep it conversational - no formal document structure
 
 Do NOT mention that there were two responses or that you're synthesizing.
 Just provide the best unified answer.`;

@@ -90,11 +90,13 @@ function registerMentionHandler(app) {
     let fullText = text;
     if (fileData && fileData.texts.length > 0) {
       fullText = text + "\n\n" + fileData.texts.join("\n\n");
+      console.log(`[DEBUG] fullText with file content (${fullText.length} chars):`);
+      console.log(`[DEBUG] First 1000 chars: ${fullText.substring(0, 1000)}`);
     }
 
     // Log user message to conversation history
     await appendMessage(channelName, "user", fullText, null);
-    console.log(`[${agentKey}] #${channelName}: ${text}${fileData ? ` (+${event.files?.length || 0} files)` : ""}`);
+    console.log(`[${agentKey}] #${channelName}: ${text}${files && files.length > 0 ? ` (+${files.length} files)` : ""}`);
 
     // COS routing for "assign X: task" commands
     if (agentKey === "cos") {
@@ -107,10 +109,14 @@ function registerMentionHandler(app) {
 
     // Fetch conversation history and build messages array
     const history = await getConversation(channelName);
+    console.log(`[DEBUG] Conversation history: ${history.length} messages`);
+
     const messages = history.slice(-20).map((msg) => ({
       role: msg.role === "user" ? "user" : "assistant",
       content: msg.content,
     }));
+
+    console.log(`[DEBUG] Messages being sent to AI: ${messages.length}`);
 
     // Build current message content (may include images for vision)
     let currentContent;
