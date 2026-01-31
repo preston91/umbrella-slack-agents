@@ -13,9 +13,27 @@ function cleanText(text) {
   return text.replace(/<@.*?>/g, "").trim();
 }
 
+// Check if messages contain multimodal content (images)
+function hasMultimodalContent(messages) {
+  return messages.some((msg) => Array.isArray(msg.content));
+}
+
 // Route to appropriate provider based on agent config
-async function getAIResponse(agent, messages) {
+// For file/image requests, bypass consensus and use Gemini directly
+async function getAIResponse(agent, messages, options = {}) {
+  const { hasFiles = false } = options;
   const provider = agent.provider || "claude";
+
+  // If there are files (images/PDFs), use Gemini directly - it handles multimodal better
+  // and avoids the complexity of consensus synthesis with file content
+  if (hasFiles || hasMultimodalContent(messages)) {
+    console.log(`[${agent.name}] Files detected - routing directly to Gemini`);
+    if (isGeminiAvailable()) {
+      return askGemini(agent.systemPrompt, messages);
+    }
+    console.log(`[${agent.name}] Gemini unavailable, falling back to Claude`);
+    return askClaude(agent.systemPrompt, messages);
+  }
 
   switch (provider) {
     case "consensus":
@@ -136,7 +154,9 @@ function registerMentionHandler(app) {
     }
 
     // Get AI response with full conversation context
-    const result = await getAIResponse(agent, messages);
+    // Pass hasFiles flag to route file requests directly to Gemini
+    const hasFiles = fileData && (fileData.images.length > 0 || fileData.texts.length > 0);
+    const result = await getAIResponse(agent, messages, { hasFiles });
 
     // Delete thinking message
     try {
