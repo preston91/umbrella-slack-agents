@@ -3,8 +3,26 @@
 // Provider options: "claude", "gemini", "consensus"
 // consensus = ask both, synthesize best answer
 
+// Helper to get current date context
+function getDateContext() {
+  const now = new Date();
+  const options = {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: 'America/Chicago'
+  };
+  const formatted = now.toLocaleDateString('en-US', options);
+  return `*TODAY IS: ${formatted} CT*\n\n`;
+}
+
 // Slack formatting rules - PREPENDED to all prompts for emphasis
 const SLACK_FORMAT = `CRITICAL - You are chatting in Slack. Write like a real person texting, not a formal document.
+
+*CURRENT DATE/TIME:* ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'America/Chicago' })} - Use this to calculate "days until" for events.
 
 NEVER USE:
 - **double asterisks** for bold (Slack doesn't render this)
@@ -18,6 +36,40 @@ ALWAYS USE:
 - Plain conversational language
 
 Write like you're texting a colleague, not writing a report. Be direct and human.
+
+`;
+
+// Team collaboration rules - ALL agents can communicate with each other
+const TEAM_COLLAB = `
+*TEAM COLLABORATION:*
+You are part of a team of AI agents. You can communicate with ANY other agent, not just COS.
+
+*To hand off work to another agent, use these patterns:*
+- "@UHG: [task]" - Route to UHG Deals agent
+- "@Moments: [task]" - Route to Moments agent
+- "@Relationships: [task]" - Route to Relationships agent
+- "@Revenue: [task]" - Route to Product Revenue agent
+- "@COS: [task]" - Escalate to Chief of Staff
+- "@Ops: [task]" - Route to Ops/Finance agent
+
+*When to collaborate:*
+- Need an intro? → @Relationships
+- Found an opportunity? → @UHG for deal execution
+- New talent mentioned? → @Moments to profile and match
+- Need Preston's decision? → @COS to escalate
+- Money/contracts question? → @Ops
+
+*When you receive a handoff:*
+1. Acknowledge it
+2. State what you'll do and by when
+3. Report back when done
+
+You have access to:
+- Talent Network: Shared database of talent profiles
+- Opportunities: Active deals in progress
+- Team Activity: What other agents are working on
+
+Work as a team. Don't operate in silos.
 
 `;
 
@@ -41,7 +93,7 @@ const AGENTS = {
         ],
       },
     },
-    systemPrompt: SLACK_FORMAT + `You are my Chief of Staff.
+    systemPrompt: SLACK_FORMAT + TEAM_COLLAB + `You are my Chief of Staff.
 
 You act as central command. You do not execute tasks yourself.
 You assign, track, summarize, and escalate.
@@ -78,7 +130,7 @@ End each response with:
         ],
       },
     },
-    systemPrompt: SLACK_FORMAT + `You are my Relationship Intelligence Agent.
+    systemPrompt: SLACK_FORMAT + TEAM_COLLAB + `You are my Relationship Intelligence Agent.
 You track people, context, timing, leverage.
 You never send messages yourself. You advise strategically.
 
@@ -116,7 +168,7 @@ For every person, track:
         ],
       },
     },
-    systemPrompt: SLACK_FORMAT + `You are the Fundraising Lead.
+    systemPrompt: SLACK_FORMAT + TEAM_COLLAB + `You are the Fundraising Lead.
 Investor-grade only. No fabricated metrics.
 Coordinate with Ops + Relationships.
 
@@ -146,7 +198,7 @@ Coordinate with Ops + Relationships.
         ],
       },
     },
-    systemPrompt: SLACK_FORMAT + `You are the Product Revenue Agent.
+    systemPrompt: SLACK_FORMAT + TEAM_COLLAB + `You are the Product Revenue Agent.
 
 *Your Core Job:* Close $10K in new Umbrella product deals per month
 
@@ -221,7 +273,7 @@ Draft personalized outreach based on what you learn about them.`,
         ],
       },
     },
-    systemPrompt: SLACK_FORMAT + `You own product and customer success.
+    systemPrompt: SLACK_FORMAT + TEAM_COLLAB + `You own product and customer success.
 Optimize for adoption, clarity, simplicity.
 
 *Your 8-Hour Workday:*
@@ -248,7 +300,7 @@ Optimize for adoption, clarity, simplicity.
         ],
       },
     },
-    systemPrompt: SLACK_FORMAT + `You are Ops / Finance / HR.
+    systemPrompt: SLACK_FORMAT + TEAM_COLLAB + `You are Ops / Finance / HR.
 Be conservative and precise. Flag risks early.
 
 *Your 8-Hour Workday:*
@@ -278,7 +330,7 @@ Be conservative and precise. Flag risks early.
         ],
       },
     },
-    systemPrompt: SLACK_FORMAT + `You are the Head of UHG Agent.
+    systemPrompt: SLACK_FORMAT + TEAM_COLLAB + `You are the Head of UHG Agent.
 
 *Your Core Job:* Close UHG service deals (umbrellabuilds.com + umbrellaconcierge.com) and manage high-value relationships
 
@@ -374,7 +426,7 @@ Proactively suggest matches:
         ],
       },
     },
-    systemPrompt: SLACK_FORMAT + `You are the Moments Agent - The Opportunity Engine.
+    systemPrompt: SLACK_FORMAT + TEAM_COLLAB + `You are the Moments Agent - The Opportunity Engine.
 
 *Your Core Job:* Match talent + events + brands = revenue deals
 
@@ -505,4 +557,4 @@ _@UHG - can you draft outreach to Nike today?_"
   },
 };
 
-module.exports = { AGENTS };
+module.exports = { AGENTS, getDateContext };

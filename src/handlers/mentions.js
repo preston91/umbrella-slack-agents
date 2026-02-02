@@ -7,7 +7,7 @@ const { askGemini, isGeminiAvailable } = require("../services/gemini");
 const { askConsensus } = require("../services/consensus");
 const { logEvent, getConversation, appendMessage } = require("../services/memory");
 const { processFiles } = require("../services/files");
-const { handleCOSRouting } = require("./routing");
+const { handleAgentRouting } = require("./routing");
 
 function cleanText(text) {
   return text.replace(/<@.*?>/g, "").trim();
@@ -116,11 +116,10 @@ function registerMentionHandler(app) {
     await appendMessage(channelName, "user", fullText, null);
     console.log(`[${agentKey}] #${channelName}: ${text}${files && files.length > 0 ? ` (+${files.length} files)` : ""}`);
 
-    // COS routing for "assign X: task" commands
-    if (agentKey === "cos") {
-      const routed = await handleCOSRouting(text, client, say);
-      if (routed) return;
-    }
+    // Inter-agent routing - ALL agents can route to each other
+    // Patterns: "assign X: task", "@X: task", "route to X: task", "handoff to X: task"
+    const routed = await handleAgentRouting(text, agentKey, client, say);
+    if (routed) return;
 
     // Show thinking indicator
     const thinkingMsg = await say(`_${agent.name} is thinking..._`);

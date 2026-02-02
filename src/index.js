@@ -10,7 +10,7 @@ const { initGemini } = require("./services/gemini");
 const { initSupabase } = require("./services/supabase");
 const { getSummaryData, clearAll } = require("./services/memory");
 const { registerMentionHandler } = require("./handlers/mentions");
-const { AGENTS } = require("./config/agents");
+const { AGENTS, getDateContext } = require("./config/agents");
 const {
   getUpcomingEvents,
   getCurrentBrandCycle,
@@ -18,6 +18,18 @@ const {
   getHeritageMonths,
   getCulturalMomentsForMonth,
 } = require("./data/cultural-calendar");
+const {
+  getTeamActivityPrompt,
+  scanForTalentMentions,
+  getPendingHandoffs,
+  getTalentContextPrompt,
+  getOpportunitiesContextPrompt,
+} = require("./services/team-context");
+const {
+  getAllTalent,
+  getOpportunities,
+  addTalent,
+} = require("./services/talent-network");
 
 // Validate environment and get config
 const env = validateEnv();
@@ -58,9 +70,12 @@ cron.schedule(
   async () => {
     console.log("9am - Morning standup tasks...");
 
+    // Get current date context for all prompts
+    const dateContext = getDateContext();
+
     // 1. COS Daily Summary
     const { events, tasks } = await getSummaryData();
-    const summaryPrompt = `It's 9am - time for morning standup.
+    const summaryPrompt = `${dateContext}It's 9am - time for morning standup.
 
 ${events.length > 0 || tasks.length > 0 ? `Events from last 24h:
 ${events.map((e) => `- ${e.channel}: ${e.text}`).join("\n") || "None"}
@@ -76,7 +91,7 @@ What's on deck for today? What needs Preston's attention first?`;
     }
 
     // 2. Product Revenue - Daily Prospecting
-    const revenuePrompt = `It's 9am. Time for your daily prospecting tasks.
+    const revenuePrompt = `${dateContext}It's 9am. Time for your daily prospecting tasks.
 
 Generate your morning output:
 1. List 5 email drafts to prospects (existing warm leads first)
@@ -92,7 +107,7 @@ Focus on anyone who mentioned workflow problems, automation, or "too many tools"
     }
 
     // 3. UHG Deals - Daily Pipeline
-    const uhgPrompt = `It's 9am. Time for your daily pipeline review.
+    const uhgPrompt = `${dateContext}It's 9am. Time for your daily pipeline review.
 
 Generate your morning output:
 1. 3 email drafts for UHG prospects (fundraising, app builds, advisory)
@@ -115,7 +130,7 @@ Focus on: Profluence, Malcolm Jenkins, Fred's intros, anyone raising money.`;
     const heritageMonths = getHeritageMonths(currentMonth);
     const culturalMoments = getCulturalMomentsForMonth(currentMonth);
 
-    const momentsPrompt = `It's 9am. Time for your daily opportunity scan.
+    const momentsPrompt = `${dateContext}It's 9am. Time for your daily opportunity scan.
 
 *CULTURAL CALENDAR DATA:*
 
@@ -152,7 +167,7 @@ For each opportunity, specify:
     }
 
     // 5. Ops - Cash check
-    const opsPrompt = `It's 9am. Quick cash position check.
+    const opsPrompt = `${dateContext}It's 9am. Quick cash position check.
 - Review any outstanding invoices
 - Flag any payments due this week
 - Note any upcoming expenses`;
@@ -173,43 +188,93 @@ cron.schedule(
   "30 10 * * 1-5", // Mon-Fri at 10:30am
   async () => {
     console.log("10:30am - Mid-morning tasks...");
+    const dateContext = getDateContext();
+
+    // Get cross-agent context for collaboration
+    const momentsTeamContext = await getTeamActivityPrompt("moments", 4);
+    const uhgTeamContext = await getTeamActivityPrompt("deals", 4);
+    const relTeamContext = await getTeamActivityPrompt("relationships", 4);
+    const talentContext = await getTalentContextPrompt();
+    const oppsContext = await getOpportunitiesContextPrompt();
 
     // Moments → UHG Handoff
-    const handoffPrompt = `It's 10:30am - time to hand off opportunities to UHG.
+    const handoffPrompt = `${dateContext}It's 10:30am - time to hand off opportunities to UHG.
+
+${momentsTeamContext}
+
+${talentContext}
+
+${oppsContext}
 
 Review the opportunities you identified this morning. For each one:
 1. Create a brief deal summary
 2. Specify what outreach UHG should draft
 3. Note any relationship gaps that need filling
 
-Tag @UHG for each opportunity that's ready for outreach.`;
+To hand off, format like: "@UHG: [Talent] x [Brand] for [Event] - [estimated value] - need outreach by [date]"
+
+The UHG agent will receive your handoffs and confirm receipt.`;
 
     const momentsResult = await askClaudeWithSearch(AGENTS.moments.systemPrompt, handoffPrompt);
     if (momentsResult.success) {
       await postToChannel("#moments", `*UHG Handoff - 10:30am*\n\n${momentsResult.text}`);
     }
 
-    // UHG - Sync with Moments
-    const uhgSyncPrompt = `It's 10:30am - sync with Moments Agent.
+    // UHG - Sync with Moments (with full context)
+    const uhgPendingHandoffs = await getPendingHandoffs("deals");
+    let uhgSyncPrompt = `${dateContext}It's 10:30am - sync with Moments Agent and other teams.
 
-Check #moments for any opportunities handed off this morning.
-For each opportunity:
+${uhgTeamContext}
+
+${talentContext}
+
+${oppsContext}
+
+`;
+
+    if (uhgPendingHandoffs.length > 0) {
+      uhgSyncPrompt += `*INCOMING HANDOFFS:*\n`;
+      for (const h of uhgPendingHandoffs) {
+        uhgSyncPrompt += `- From ${h.from}: ${h.content}\n`;
+      }
+      uhgSyncPrompt += `\n`;
+    }
+
+    uhgSyncPrompt += `For each opportunity:
 1. Acknowledge receipt
 2. Confirm you'll draft outreach by noon
-3. Flag any blockers (need intro, need more info, etc.)`;
+3. Flag any blockers - if you need an intro, tag @Relationships
+
+To request intros: "@Relationships: Need intro to [contact] at [company] for [deal]"`;
 
     const uhgResult = await askClaudeWithSearch(AGENTS.deals.systemPrompt, uhgSyncPrompt);
     if (uhgResult.success) {
       await postToChannel("#uhg-deals", `*Moments Sync - 10:30am*\n\n${uhgResult.text}`);
     }
 
-    // Relationships - Research contacts
-    const relationshipsPrompt = `It's 10:30am - deep research time.
+    // Relationships - Research contacts (with pending requests)
+    const relPendingHandoffs = await getPendingHandoffs("relationships");
+    let relationshipsPrompt = `${dateContext}It's 10:30am - deep research time.
 
-Look at any intro requests from this morning. For each person we need to reach:
+${relTeamContext}
+
+`;
+
+    if (relPendingHandoffs.length > 0) {
+      relationshipsPrompt += `*INTRO REQUESTS FROM TEAM:*\n`;
+      for (const h of relPendingHandoffs) {
+        relationshipsPrompt += `- From ${h.from}: ${h.content}\n`;
+      }
+      relationshipsPrompt += `\n`;
+    }
+
+    relationshipsPrompt += `For each person we need to reach:
 - What do we know about them?
 - Who in Preston's network can intro?
-- What's the best approach?`;
+- What's the best approach?
+
+After researching, hand back to the requesting agent with intro paths:
+"@UHG: For [contact] - best path is through [connector]. Here's the approach..."`;
 
     const relResult = await askClaudeWithSearch(AGENTS.relationships.systemPrompt, relationshipsPrompt);
     if (relResult.success) {
@@ -226,9 +291,10 @@ cron.schedule(
   "0 12 * * 1-5", // Mon-Fri at noon
   async () => {
     console.log("12pm - Midday check...");
+    const dateContext = getDateContext();
 
     // COS - Unblock items
-    const cosPrompt = `It's noon - midday check.
+    const cosPrompt = `${dateContext}It's noon - midday check.
 
 Review morning activity:
 1. What got done?
@@ -242,7 +308,7 @@ Review morning activity:
     }
 
     // UHG - Deal follow-ups
-    const uhgPrompt = `It's noon - follow up on all active deals.
+    const uhgPrompt = `${dateContext}It's noon - follow up on all active deals.
 
 For each deal in progress:
 1. What's the status?
@@ -255,18 +321,55 @@ For each deal in progress:
       await postToChannel("#uhg-deals", `*Deal Follow-ups - 12pm*\n\n${uhgResult.text}`);
     }
 
-    // Moments - Talent research (if any new talent mentioned today)
-    const momentsPrompt = `It's noon - talent research time.
+    // Moments - Talent research (with full team context and talent network)
+    const talentMentions = await scanForTalentMentions(8); // Last 8 hours
+    const teamActivity = await getTeamActivityPrompt("moments", 8);
+    const talentContext = await getTalentContextPrompt();
+    const opportunitiesContext = await getOpportunitiesContextPrompt();
+    const pendingHandoffs = await getPendingHandoffs("moments");
 
-Check if any new talent was mentioned in conversations today.
-If so, create a full profile:
-- Who are they?
+    let momentsPrompt = `${dateContext}It's noon - talent research time.
+
+${teamActivity}
+
+${talentContext}
+
+${opportunitiesContext}
+
+`;
+
+    // Add any detected talent mentions
+    if (talentMentions.length > 0) {
+      momentsPrompt += `*NEW TALENT MENTIONS DETECTED:*\n`;
+      for (const mention of talentMentions.slice(0, 5)) {
+        momentsPrompt += `- *${mention.name}* (mentioned in #${mention.source})\n`;
+        momentsPrompt += `  Context: "${mention.context}"\n`;
+      }
+      momentsPrompt += `\nFor each new talent, use web search to create a full profile:
+- Who are they? (role, achievements)
 - Audience/demographics
-- Brand history
-- Upcoming opportunities that fit
-- Deal potential
+- Brand history (past endorsements)
+- What deals they might be open to
+- Upcoming opportunities that fit them
 
-If no new talent, review existing talent in network for upcoming moments.`;
+Then hand off to @UHG with an opportunity brief.\n`;
+    } else {
+      momentsPrompt += `No new talent mentions detected in the last 8 hours.
+
+Review existing talent in the network for upcoming moments:
+1. Check the talent profiles above
+2. Match them to upcoming cultural moments
+3. Create any new opportunity briefs for UHG
+4. Flag any talent relationships that need attention\n`;
+    }
+
+    // Add pending handoffs
+    if (pendingHandoffs.length > 0) {
+      momentsPrompt += `\n*PENDING REQUESTS FROM OTHER AGENTS:*\n`;
+      for (const h of pendingHandoffs.slice(0, 3)) {
+        momentsPrompt += `- From ${h.from}: ${h.content}\n`;
+      }
+    }
 
     const momentsResult = await askClaudeWithSearch(AGENTS.moments.systemPrompt, momentsPrompt);
     if (momentsResult.success) {

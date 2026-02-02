@@ -19,6 +19,10 @@ function isSupabaseAvailable() {
   return supabase !== null;
 }
 
+function getClient() {
+  return supabase;
+}
+
 // ========== TASKS (using your existing tasks table) ==========
 
 async function createTask({ description, assignedTo, assignedBy = "cos", deadline = null, deliverable = null }) {
@@ -318,6 +322,7 @@ async function getSummaryData(hours = 24) {
 module.exports = {
   initSupabase,
   isSupabaseAvailable,
+  getClient,
   // Tasks
   createTask,
   getTasks,
