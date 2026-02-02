@@ -5,7 +5,7 @@ require("dotenv").config();
 const { App } = require("@slack/bolt");
 const cron = require("node-cron");
 const { validateEnv } = require("./utils/env");
-const { initClaude, askClaude } = require("./services/claude");
+const { initClaude, askClaude, askClaudeWithSearch } = require("./services/claude");
 const { initGemini } = require("./services/gemini");
 const { initSupabase } = require("./services/supabase");
 const { getSummaryData, clearAll } = require("./services/memory");
@@ -15,6 +15,8 @@ const {
   getUpcomingEvents,
   getCurrentBrandCycle,
   formatEventForSlack,
+  getHeritageMonths,
+  getCulturalMomentsForMonth,
 } = require("./data/cultural-calendar");
 
 // Validate environment and get config
@@ -38,37 +40,42 @@ const app = new App({
 // Register handlers
 registerMentionHandler(app);
 
-// ===== DAILY 9AM CT TASKS =====
-// Cron: "0 9 * * *" = 9:00am every day
-// Timezone: America/Chicago (Central Time)
+// Helper to post to channel
+async function postToChannel(channel, text) {
+  try {
+    await app.client.chat.postMessage({ channel, text });
+  } catch (error) {
+    console.error(`Failed to post to ${channel}:`, error.message);
+  }
+}
 
+// ===== 8-HOUR WORKDAY SCHEDULE (9am - 5pm CT) =====
+// All times in America/Chicago timezone
+
+// ===== 9:00 AM - MORNING STANDUP =====
 cron.schedule(
-  "0 9 * * *",
+  "0 9 * * 1-5", // Mon-Fri at 9am
   async () => {
-    console.log("Running 9am daily tasks...");
+    console.log("9am - Morning standup tasks...");
 
     // 1. COS Daily Summary
     const { events, tasks } = await getSummaryData();
-    if (events.length > 0 || tasks.length > 0) {
-      const summaryPrompt = `Summarize the last 24 hours.
+    const summaryPrompt = `It's 9am - time for morning standup.
 
-Events:
+${events.length > 0 || tasks.length > 0 ? `Events from last 24h:
 ${events.map((e) => `- ${e.channel}: ${e.text}`).join("\n") || "None"}
 
 Tasks:
-${tasks.map((t) => `- ${t.assigned_to}: ${t.description} [${t.status}]`).join("\n") || "None"}`;
+${tasks.map((t) => `- ${t.assigned_to}: ${t.description} [${t.status}]`).join("\n") || "None"}` : "No overnight activity to report."}
 
-      const cosResult = await askClaude(
-        AGENTS.cos.systemPrompt,
-        summaryPrompt
-      );
+What's on deck for today? What needs Preston's attention first?`;
 
-      if (cosResult.success) {
-        await postToChannel("#cos-command", `*Daily COS Summary*\n\n${cosResult.text}`);
-      }
+    const cosResult = await askClaude(AGENTS.cos.systemPrompt, summaryPrompt);
+    if (cosResult.success) {
+      await postToChannel("#cos-command", `*Morning Standup - 9am*\n\n${cosResult.text}`);
     }
 
-    // 2. Product Revenue Agent - Daily Prospecting
+    // 2. Product Revenue - Daily Prospecting
     const revenuePrompt = `It's 9am. Time for your daily prospecting tasks.
 
 Generate your morning output:
@@ -79,16 +86,12 @@ Generate your morning output:
 
 Focus on anyone who mentioned workflow problems, automation, or "too many tools".`;
 
-    const revenueResult = await askClaude(
-      AGENTS.revenue.systemPrompt,
-      revenuePrompt
-    );
-
+    const revenueResult = await askClaude(AGENTS.revenue.systemPrompt, revenuePrompt);
     if (revenueResult.success) {
       await postToChannel("#product-revenue", `*Daily Prospecting - 9am*\n\n${revenueResult.text}`);
     }
 
-    // 3. UHG Deals Agent - Daily Pipeline
+    // 3. UHG Deals - Daily Pipeline
     const uhgPrompt = `It's 9am. Time for your daily pipeline review.
 
 Generate your morning output:
@@ -99,11 +102,7 @@ Generate your morning output:
 
 Focus on: Profluence, Malcolm Jenkins, Fred's intros, anyone raising money.`;
 
-    const uhgResult = await askClaude(
-      AGENTS.deals.systemPrompt,
-      uhgPrompt
-    );
-
+    const uhgResult = await askClaudeWithSearch(AGENTS.deals.systemPrompt, uhgPrompt);
     if (uhgResult.success) {
       await postToChannel("#uhg-deals", `*Daily Pipeline - 9am*\n\n${uhgResult.text}`);
     }
@@ -112,16 +111,25 @@ Focus on: Profluence, Malcolm Jenkins, Fred's intros, anyone raising money.`;
     const upcomingWeek = getUpcomingEvents(7);
     const upcoming30Days = getUpcomingEvents(30);
     const brandCycles = getCurrentBrandCycle();
+    const currentMonth = new Date().getMonth() + 1;
+    const heritageMonths = getHeritageMonths(currentMonth);
+    const culturalMoments = getCulturalMomentsForMonth(currentMonth);
 
     const momentsPrompt = `It's 9am. Time for your daily opportunity scan.
 
 *CULTURAL CALENDAR DATA:*
+
+*Heritage/Awareness Months:*
+${heritageMonths.length > 0 ? heritageMonths.map((h) => `- ${h.name} (${h.community})`).join("\n") : "None this month"}
 
 *This Week's Events (next 7 days):*
 ${upcomingWeek.length > 0 ? upcomingWeek.map(formatEventForSlack).join("\n\n") : "No major events this week"}
 
 *30-Day Pipeline:*
 ${upcoming30Days.length > 0 ? upcoming30Days.map(formatEventForSlack).join("\n\n") : "No major events in next 30 days"}
+
+*Cultural Moments This Month:*
+${culturalMoments.slice(0, 10).map((m) => `- ${m.name} (${m.date})`).join("\n")}
 
 *Current Brand Cycles:*
 ${brandCycles.map((c) => `- *${c.name}*: ${c.description}. Action: ${c.action}`).join("\n")}
@@ -130,42 +138,358 @@ Generate your morning output based on this calendar data:
 1. *This Week's Hot Moments* - Which events should we be actively pitching RIGHT NOW?
 2. *Opportunity Alerts* - Any urgent talent + event + brand matches to flag?
 3. *What's Getting Urgent* - Anything approaching lead time cutoff?
+4. *Hand off to UHG* - Tag specific opportunities for UHG to draft outreach
 
 For each opportunity, specify:
 - The talent/brand match
 - Estimated deal value
 - What UHG earns
-- Who needs to take action (Relationships, UHG, Revenue)`;
+- Who needs to take action`;
 
-    const momentsResult = await askClaude(
-      AGENTS.moments.systemPrompt,
-      momentsPrompt
-    );
-
+    const momentsResult = await askClaudeWithSearch(AGENTS.moments.systemPrompt, momentsPrompt);
     if (momentsResult.success) {
       await postToChannel("#moments", `*Daily Opportunity Scan - 9am*\n\n${momentsResult.text}`);
     }
 
+    // 5. Ops - Cash check
+    const opsPrompt = `It's 9am. Quick cash position check.
+- Review any outstanding invoices
+- Flag any payments due this week
+- Note any upcoming expenses`;
+
+    const opsResult = await askClaude(AGENTS.ops.systemPrompt, opsPrompt);
+    if (opsResult.success) {
+      await postToChannel("#ops-finance", `*Morning Cash Check - 9am*\n\n${opsResult.text}`);
+    }
+
     clearAll();
-    console.log("9am daily tasks completed");
+    console.log("9am tasks completed");
   },
-  {
-    timezone: "America/Chicago",
-  }
+  { timezone: "America/Chicago" }
 );
 
-// Helper to post to channel
-async function postToChannel(channel, text) {
-  try {
-    await app.client.chat.postMessage({ channel, text });
-  } catch (error) {
-    console.error(`Failed to post to ${channel}:`, error.message);
-  }
-}
+// ===== 10:30 AM - MID-MORNING CHECK =====
+cron.schedule(
+  "30 10 * * 1-5", // Mon-Fri at 10:30am
+  async () => {
+    console.log("10:30am - Mid-morning tasks...");
+
+    // Moments → UHG Handoff
+    const handoffPrompt = `It's 10:30am - time to hand off opportunities to UHG.
+
+Review the opportunities you identified this morning. For each one:
+1. Create a brief deal summary
+2. Specify what outreach UHG should draft
+3. Note any relationship gaps that need filling
+
+Tag @UHG for each opportunity that's ready for outreach.`;
+
+    const momentsResult = await askClaudeWithSearch(AGENTS.moments.systemPrompt, handoffPrompt);
+    if (momentsResult.success) {
+      await postToChannel("#moments", `*UHG Handoff - 10:30am*\n\n${momentsResult.text}`);
+    }
+
+    // UHG - Sync with Moments
+    const uhgSyncPrompt = `It's 10:30am - sync with Moments Agent.
+
+Check #moments for any opportunities handed off this morning.
+For each opportunity:
+1. Acknowledge receipt
+2. Confirm you'll draft outreach by noon
+3. Flag any blockers (need intro, need more info, etc.)`;
+
+    const uhgResult = await askClaudeWithSearch(AGENTS.deals.systemPrompt, uhgSyncPrompt);
+    if (uhgResult.success) {
+      await postToChannel("#uhg-deals", `*Moments Sync - 10:30am*\n\n${uhgResult.text}`);
+    }
+
+    // Relationships - Research contacts
+    const relationshipsPrompt = `It's 10:30am - deep research time.
+
+Look at any intro requests from this morning. For each person we need to reach:
+- What do we know about them?
+- Who in Preston's network can intro?
+- What's the best approach?`;
+
+    const relResult = await askClaudeWithSearch(AGENTS.relationships.systemPrompt, relationshipsPrompt);
+    if (relResult.success) {
+      await postToChannel("#relationships", `*Contact Research - 10:30am*\n\n${relResult.text}`);
+    }
+
+    console.log("10:30am tasks completed");
+  },
+  { timezone: "America/Chicago" }
+);
+
+// ===== 12:00 PM - MIDDAY CHECK =====
+cron.schedule(
+  "0 12 * * 1-5", // Mon-Fri at noon
+  async () => {
+    console.log("12pm - Midday check...");
+
+    // COS - Unblock items
+    const cosPrompt = `It's noon - midday check.
+
+Review morning activity:
+1. What got done?
+2. What's stuck?
+3. Any blockers to clear?
+4. What needs Preston's attention before EOD?`;
+
+    const cosResult = await askClaude(AGENTS.cos.systemPrompt, cosPrompt);
+    if (cosResult.success) {
+      await postToChannel("#cos-command", `*Midday Check - 12pm*\n\n${cosResult.text}`);
+    }
+
+    // UHG - Deal follow-ups
+    const uhgPrompt = `It's noon - follow up on all active deals.
+
+For each deal in progress:
+1. What's the status?
+2. Did we send the outreach we committed to?
+3. Any responses to handle?
+4. What's the next action?`;
+
+    const uhgResult = await askClaude(AGENTS.deals.systemPrompt, uhgPrompt);
+    if (uhgResult.success) {
+      await postToChannel("#uhg-deals", `*Deal Follow-ups - 12pm*\n\n${uhgResult.text}`);
+    }
+
+    // Moments - Talent research (if any new talent mentioned today)
+    const momentsPrompt = `It's noon - talent research time.
+
+Check if any new talent was mentioned in conversations today.
+If so, create a full profile:
+- Who are they?
+- Audience/demographics
+- Brand history
+- Upcoming opportunities that fit
+- Deal potential
+
+If no new talent, review existing talent in network for upcoming moments.`;
+
+    const momentsResult = await askClaudeWithSearch(AGENTS.moments.systemPrompt, momentsPrompt);
+    if (momentsResult.success) {
+      await postToChannel("#moments", `*Talent Research - 12pm*\n\n${momentsResult.text}`);
+    }
+
+    console.log("12pm tasks completed");
+  },
+  { timezone: "America/Chicago" }
+);
+
+// ===== 2:00 PM - AFTERNOON PUSH =====
+cron.schedule(
+  "0 14 * * 1-5", // Mon-Fri at 2pm
+  async () => {
+    console.log("2pm - Afternoon push...");
+
+    // Revenue - Lead research
+    const revenuePrompt = `It's 2pm - lead research time.
+
+Dig into Preston's network for new prospects:
+- Anyone who runs a team that could use Umbrella?
+- Any recent conversations about process problems?
+- Who should we add to the pipeline?
+
+Draft personalized outreach for any new prospects.`;
+
+    const revenueResult = await askClaudeWithSearch(AGENTS.revenue.systemPrompt, revenuePrompt);
+    if (revenueResult.success) {
+      await postToChannel("#product-revenue", `*Lead Research - 2pm*\n\n${revenueResult.text}`);
+    }
+
+    // UHG - Brand outreach
+    const uhgPrompt = `It's 2pm - brand outreach time.
+
+For talent in our network, identify brands to approach:
+1. What brands fit each talent?
+2. Draft cold outreach to brand contacts
+3. Note any warm intro paths via Relationships
+
+Focus on upcoming moments in the next 30-60 days.`;
+
+    const uhgResult = await askClaudeWithSearch(AGENTS.deals.systemPrompt, uhgPrompt);
+    if (uhgResult.success) {
+      await postToChannel("#uhg-deals", `*Brand Outreach - 2pm*\n\n${uhgResult.text}`);
+    }
+
+    // Moments - Brand matching
+    const momentsPrompt = `It's 2pm - match brands to upcoming moments.
+
+Look at events in the next 60 days:
+1. Which brands should be activating around these moments?
+2. What talent in our network fits?
+3. Create 3 new opportunity briefs for UHG
+
+Be specific: talent + brand + moment + deal type + estimated value.`;
+
+    const momentsResult = await askClaudeWithSearch(AGENTS.moments.systemPrompt, momentsPrompt);
+    if (momentsResult.success) {
+      await postToChannel("#moments", `*Brand Matching - 2pm*\n\n${momentsResult.text}`);
+    }
+
+    // Ops - Contractor/invoice check
+    const opsPrompt = `It's 2pm - contractor and invoice check.
+
+- Any contractor deliverables due?
+- Any invoices to send?
+- Any payments to follow up on?`;
+
+    const opsResult = await askClaude(AGENTS.ops.systemPrompt, opsPrompt);
+    if (opsResult.success) {
+      await postToChannel("#ops-finance", `*Contractor Check - 2pm*\n\n${opsResult.text}`);
+    }
+
+    console.log("2pm tasks completed");
+  },
+  { timezone: "America/Chicago" }
+);
+
+// ===== 3:30 PM - LATE AFTERNOON =====
+cron.schedule(
+  "30 15 * * 1-5", // Mon-Fri at 3:30pm
+  async () => {
+    console.log("3:30pm - Late afternoon tasks...");
+
+    // Moments - Urgency alerts
+    const momentsPrompt = `It's 3:30pm - urgency check.
+
+Flag anything that's getting urgent:
+1. Events within 14 days - have we pitched?
+2. Events within 30 days - are deals progressing?
+3. Any lead time cutoffs approaching?
+
+For anything urgent, ping the relevant agent to take action TODAY.`;
+
+    const momentsResult = await askClaude(AGENTS.moments.systemPrompt, momentsPrompt);
+    if (momentsResult.success) {
+      await postToChannel("#moments", `*Urgency Alerts - 3:30pm*\n\n${momentsResult.text}`);
+    }
+
+    // UHG - Talent check
+    const uhgPrompt = `It's 3:30pm - talent relationship check.
+
+For key talent in our network:
+1. When did we last touch base?
+2. Any upcoming opportunities for them?
+3. Anyone we need to re-engage?
+
+Draft check-in messages for any talent that's gone quiet.`;
+
+    const uhgResult = await askClaude(AGENTS.deals.systemPrompt, uhgPrompt);
+    if (uhgResult.success) {
+      await postToChannel("#uhg-deals", `*Talent Check - 3:30pm*\n\n${uhgResult.text}`);
+    }
+
+    // Revenue - Pipeline review
+    const revenuePrompt = `It's 3:30pm - pipeline review.
+
+Update status on all prospects:
+- Who moved forward today?
+- Who needs follow-up?
+- Any deals ready to close?
+
+Flag anything that needs Preston's push.`;
+
+    const revenueResult = await askClaude(AGENTS.revenue.systemPrompt, revenuePrompt);
+    if (revenueResult.success) {
+      await postToChannel("#product-revenue", `*Pipeline Review - 3:30pm*\n\n${revenueResult.text}`);
+    }
+
+    // Relationships - Warmth check
+    const relPrompt = `It's 3:30pm - relationship warmth check.
+
+Review key relationships:
+1. Who haven't we talked to in 30+ days?
+2. Any relationships cooling that we need to warm up?
+3. Suggest touchpoints for Preston to send.`;
+
+    const relResult = await askClaude(AGENTS.relationships.systemPrompt, relPrompt);
+    if (relResult.success) {
+      await postToChannel("#relationships", `*Warmth Check - 3:30pm*\n\n${relResult.text}`);
+    }
+
+    console.log("3:30pm tasks completed");
+  },
+  { timezone: "America/Chicago" }
+);
+
+// ===== 5:00 PM - END OF DAY =====
+cron.schedule(
+  "0 17 * * 1-5", // Mon-Fri at 5pm
+  async () => {
+    console.log("5pm - End of day wrap-up...");
+
+    // COS - EOD Summary
+    const cosPrompt = `It's 5pm - end of day summary.
+
+Wrap up the day:
+1. *What moved today* - deals, relationships, opportunities
+2. *What's blocked* - needs resolution
+3. *Tomorrow's priorities* - what should Preston focus on first thing
+
+Keep it tight and actionable.`;
+
+    const cosResult = await askClaude(AGENTS.cos.systemPrompt, cosPrompt);
+    if (cosResult.success) {
+      await postToChannel("#cos-command", `*End of Day Summary - 5pm*\n\n${cosResult.text}`);
+    }
+
+    // UHG - Deal status update
+    const uhgPrompt = `It's 5pm - final deal status update.
+
+For each active deal:
+1. Status: pitched / meeting scheduled / negotiating / closed
+2. What moved today
+3. Next action and when
+
+Flag any deals that need Preston's attention tomorrow morning.`;
+
+    const uhgResult = await askClaude(AGENTS.deals.systemPrompt, uhgPrompt);
+    if (uhgResult.success) {
+      await postToChannel("#uhg-deals", `*EOD Deal Status - 5pm*\n\n${uhgResult.text}`);
+    }
+
+    // Moments - EOD Pipeline
+    const momentsPrompt = `It's 5pm - end of day opportunity pipeline update.
+
+Summarize today's opportunity work:
+1. New opportunities identified
+2. Opportunities handed to UHG
+3. Status updates on in-progress opportunities
+4. Tomorrow's focus
+
+Quick wins and urgent items for tomorrow morning.`;
+
+    const momentsResult = await askClaude(AGENTS.moments.systemPrompt, momentsPrompt);
+    if (momentsResult.success) {
+      await postToChannel("#moments", `*EOD Pipeline - 5pm*\n\n${momentsResult.text}`);
+    }
+
+    // Revenue - Close attempts
+    const revenuePrompt = `It's 5pm - last push for closes.
+
+Any deals that could close TODAY with one more push?
+- Draft final follow-up messages
+- What's the ask?
+- What's the urgency?
+
+Otherwise, set up tomorrow for closes.`;
+
+    const revenueResult = await askClaude(AGENTS.revenue.systemPrompt, revenuePrompt);
+    if (revenueResult.success) {
+      await postToChannel("#product-revenue", `*Close Push - 5pm*\n\n${revenueResult.text}`);
+    }
+
+    console.log("5pm tasks completed - workday complete");
+  },
+  { timezone: "America/Chicago" }
+);
 
 // Start
 (async () => {
   await app.start();
   console.log("Umbrella agents online");
-  console.log("Daily tasks scheduled for 9am CT");
+  console.log("8-hour workday scheduled: 9am, 10:30am, 12pm, 2pm, 3:30pm, 5pm CT (Mon-Fri)");
 })();

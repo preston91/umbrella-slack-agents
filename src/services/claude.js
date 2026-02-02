@@ -8,6 +8,13 @@ function initClaude(apiKey) {
   client = new Anthropic({ apiKey });
 }
 
+// Web search tool definition
+const WEB_SEARCH_TOOL = {
+  type: "web_search_20250305",
+  name: "web_search",
+  max_uses: 5,
+};
+
 async function askClaude(systemPrompt, userTextOrMessages, options = {}) {
   if (!client) {
     throw new Error("Claude client not initialized. Call initClaude() first.");
@@ -15,7 +22,8 @@ async function askClaude(systemPrompt, userTextOrMessages, options = {}) {
 
   const {
     model = "claude-sonnet-4-5-20250929",
-    maxTokens = 1200,
+    maxTokens = 2048,
+    enableWebSearch = false,
   } = options;
 
   // Support both single string and messages array
@@ -29,17 +37,39 @@ async function askClaude(systemPrompt, userTextOrMessages, options = {}) {
   }
 
   try {
-    const response = await client.messages.create({
+    const requestParams = {
       model,
       max_tokens: maxTokens,
       system: systemPrompt,
       messages,
-    });
+    };
+
+    // Add web search tool if enabled
+    if (enableWebSearch) {
+      requestParams.tools = [WEB_SEARCH_TOOL];
+    }
+
+    const response = await client.messages.create(requestParams);
+
+    // Extract text from response, handling tool use responses
+    let responseText = "";
+    for (const block of response.content) {
+      if (block.type === "text") {
+        responseText += block.text;
+      } else if (block.type === "web_search_tool_result") {
+        // Web search was used - the model will incorporate results
+        // Just log that search was performed
+        console.log("Web search performed during response");
+      }
+    }
 
     return {
       success: true,
-      text: response.content[0].text,
+      text: responseText,
       model,
+      usedWebSearch: response.content.some(
+        (b) => b.type === "tool_use" && b.name === "web_search"
+      ),
     };
   } catch (error) {
     console.error("Claude API error:", error.message);
@@ -53,4 +83,12 @@ async function askClaude(systemPrompt, userTextOrMessages, options = {}) {
   }
 }
 
-module.exports = { initClaude, askClaude };
+// Convenience function for web search enabled queries
+async function askClaudeWithSearch(systemPrompt, userTextOrMessages, options = {}) {
+  return askClaude(systemPrompt, userTextOrMessages, {
+    ...options,
+    enableWebSearch: true,
+  });
+}
+
+module.exports = { initClaude, askClaude, askClaudeWithSearch };
