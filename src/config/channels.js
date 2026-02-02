@@ -8,6 +8,7 @@ const CHANNEL_AGENT_MAP = {
   "product-cs": "product_cs",
   "ops-finance": "ops",
   "uhg-deals": "deals",
+  "moments": "moments",
 };
 
 // Reverse lookup: agent key -> channel name
