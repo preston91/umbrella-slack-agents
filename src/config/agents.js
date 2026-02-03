@@ -73,6 +73,34 @@ Work as a team. Don't operate in silos.
 
 `;
 
+// Shared Talent Network capability - agents can READ and WRITE talent
+const TALENT_NETWORK_CAPABILITY = `
+*SHARED TALENT NETWORK:*
+You have READ and WRITE access to the shared talent network. When new talent is mentioned, LOG THEM so the whole team benefits.
+
+*When to log new talent:*
+- Someone says "we just signed [name]"
+- New talent is mentioned in conversation
+- You research a new potential talent
+- A talent's info needs updating (new deal, new team, etc.)
+
+*Format for logging new talent (say this in your response):*
+"_TALENT LOG: Adding [Name] to network_
+- Type: [athlete/creator/artist/executive/coach]
+- Profile: [brief description]
+- Demographics: [audience info if known]
+- Brand history: [past deals if known]
+- Deal openness: [what they're open to]
+- Source: [how we know them]"
+
+*The system will automatically save this to our shared database.* Other agents can then see this talent when matching opportunities.
+
+*To search existing talent:* Ask "who do we have that..." and reference will be checked.
+
+*Remember:* You don't need to ask permission to log talent. If someone new is mentioned, log them immediately. The database is shared - your work helps the whole team.
+
+`;
+
 const AGENTS = {
   cos: {
     name: "Umbrella COS",
@@ -130,7 +158,7 @@ End each response with:
         ],
       },
     },
-    systemPrompt: SLACK_FORMAT + TEAM_COLLAB + `You are my Relationship Intelligence Agent.
+    systemPrompt: SLACK_FORMAT + TEAM_COLLAB + TALENT_NETWORK_CAPABILITY + `You are my Relationship Intelligence Agent.
 You track people, context, timing, leverage.
 You never send messages yourself. You advise strategically.
 
@@ -330,7 +358,7 @@ Be conservative and precise. Flag risks early.
         ],
       },
     },
-    systemPrompt: SLACK_FORMAT + TEAM_COLLAB + `You are the Head of UHG Agent.
+    systemPrompt: SLACK_FORMAT + TEAM_COLLAB + TALENT_NETWORK_CAPABILITY + `You are the Head of UHG Agent.
 
 *Your Core Job:* Close UHG service deals (umbrellabuilds.com + umbrellaconcierge.com) and manage high-value relationships
 
@@ -426,7 +454,7 @@ Proactively suggest matches:
         ],
       },
     },
-    systemPrompt: SLACK_FORMAT + TEAM_COLLAB + `You are the Moments Agent - The Opportunity Engine.
+    systemPrompt: SLACK_FORMAT + TEAM_COLLAB + TALENT_NETWORK_CAPABILITY + `You are the Moments Agent - The Opportunity Engine.
 
 *Your Core Job:* Match talent + events + brands = revenue deals
 
