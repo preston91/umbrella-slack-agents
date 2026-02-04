@@ -24,9 +24,27 @@ Your job is to:
 Do NOT mention that there were two responses or that you're synthesizing.
 Just provide the best unified answer.`;
 
+// Helper to delay for retry backoff
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Query both providers with optional retry
+async function queryBothProviders(systemPrompt, userTextOrMessages, attempt = 1) {
+  console.log(`[consensus] Querying Claude and Gemini in parallel (attempt ${attempt})...`);
+
+  const [claudeResult, geminiResult] = await Promise.all([
+    askClaude(systemPrompt, userTextOrMessages),
+    askGemini(systemPrompt, userTextOrMessages),
+  ]);
+
+  return { claudeResult, geminiResult };
+}
+
 async function askConsensus(systemPrompt, userTextOrMessages, options = {}) {
   const {
     synthesizer = "claude", // which model synthesizes the final answer
+    maxRetries = 2, // retry once on total failure
   } = options;
 
   // If Gemini isn't available, just use Claude
@@ -35,20 +53,47 @@ async function askConsensus(systemPrompt, userTextOrMessages, options = {}) {
     return askClaude(systemPrompt, userTextOrMessages);
   }
 
-  // Ask both in parallel
-  console.log("[consensus] Querying Claude and Gemini in parallel...");
-  const [claudeResult, geminiResult] = await Promise.all([
-    askClaude(systemPrompt, userTextOrMessages),
-    askGemini(systemPrompt, userTextOrMessages),
-  ]);
+  let claudeResult, geminiResult;
+  let lastClaudeError, lastGeminiError;
 
-  // If one failed, return the other
+  // Try up to maxRetries times if both fail
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const results = await queryBothProviders(systemPrompt, userTextOrMessages, attempt);
+    claudeResult = results.claudeResult;
+    geminiResult = results.geminiResult;
+
+    // If at least one succeeded, break out
+    if (claudeResult.success || geminiResult.success) {
+      break;
+    }
+
+    // Both failed - save errors and maybe retry
+    lastClaudeError = claudeResult.error;
+    lastGeminiError = geminiResult.error;
+
+    if (attempt < maxRetries) {
+      const backoffMs = attempt * 2000; // 2s, 4s, etc.
+      console.log(`[consensus] Both providers failed, retrying in ${backoffMs}ms...`);
+      console.log(`[consensus] Claude error: ${lastClaudeError}`);
+      console.log(`[consensus] Gemini error: ${lastGeminiError}`);
+      await delay(backoffMs);
+    }
+  }
+
+  // If both still failed after retries, return detailed error
   if (!claudeResult.success && !geminiResult.success) {
+    const claudeErr = claudeResult.error || lastClaudeError || "Unknown error";
+    const geminiErr = geminiResult.error || lastGeminiError || "Unknown error";
+
+    console.error(`[consensus] Both providers failed after ${maxRetries} attempts`);
+    console.error(`[consensus] Claude: ${claudeErr}`);
+    console.error(`[consensus] Gemini: ${geminiErr}`);
+
     return {
       success: false,
       text: null,
-      error: "Both Claude and Gemini failed",
-      providers: { claude: claudeResult.error, gemini: geminiResult.error },
+      error: `Both AI providers failed after ${maxRetries} attempts. Claude: ${claudeErr} | Gemini: ${geminiErr}`,
+      providers: { claude: claudeErr, gemini: geminiErr },
     };
   }
 
