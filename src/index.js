@@ -30,6 +30,18 @@ const {
   getOpportunities,
   addTalent,
 } = require("./services/talent-network");
+// Email, Calendar, and Productivity integrations
+const { initGmail, isGmailAvailable } = require("./services/gmail");
+const { initCalendar, isCalendarAvailable } = require("./services/calendar");
+const {
+  getProductivityContextPrompt,
+  generateMorningBriefing,
+  generateTeamMeetingUpdates,
+  getMeetingAlert,
+  runDailySync,
+  formatBriefingForSlack,
+} = require("./services/productivity");
+const { syncFollowUps, getHighPriorityFollowUps } = require("./services/followups");
 
 // Validate environment and get config
 const env = validateEnv();
@@ -40,6 +52,16 @@ initGemini(env.gemini.apiKey);
 
 // Initialize Supabase (optional - falls back to in-memory)
 initSupabase(env.supabase.url, env.supabase.serviceKey);
+
+// Initialize Gmail & Calendar (optional - for email/calendar integration)
+const hasGoogleAuth = env.google.clientId && env.google.clientSecret && env.google.refreshToken;
+if (hasGoogleAuth) {
+  initGmail(env.google.clientId, env.google.clientSecret, env.google.refreshToken);
+  initCalendar(env.google.clientId, env.google.clientSecret, env.google.refreshToken);
+} else {
+  console.warn("Google OAuth not configured. Email/Calendar features disabled.");
+  console.warn("To enable, set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN");
+}
 
 // Initialize Slack app
 const app = new App({
@@ -64,6 +86,17 @@ async function postToChannel(channel, text) {
 // ===== 8-HOUR WORKDAY SCHEDULE (9am - 5pm CT) =====
 // All times in America/Chicago timezone
 
+// ===== 8:45 AM - PRE-STANDUP SYNC =====
+cron.schedule(
+  "45 8 * * 1-5", // Mon-Fri at 8:45am
+  async () => {
+    console.log("8:45am - Running daily productivity sync...");
+    await runDailySync();
+    console.log("8:45am - Productivity sync complete");
+  },
+  { timezone: "America/Chicago" }
+);
+
 // ===== 9:00 AM - MORNING STANDUP =====
 cron.schedule(
   "0 9 * * 1-5", // Mon-Fri at 9am
@@ -73,21 +106,37 @@ cron.schedule(
     // Get current date context for all prompts
     const dateContext = getDateContext();
 
-    // 1. COS Daily Summary
+    // Get productivity context (email, calendar, follow-ups)
+    const productivityContext = await getProductivityContextPrompt();
+
+    // Generate morning briefing
+    const briefing = await generateMorningBriefing();
+    if (briefing.sections.length > 0) {
+      const briefingMessage = formatBriefingForSlack(briefing);
+      await postToChannel("#cos-command", briefingMessage);
+    }
+
+    // 1. COS Daily Summary with full productivity context
     const { events, tasks } = await getSummaryData();
     const summaryPrompt = `${dateContext}It's 9am - time for morning standup.
 
-${events.length > 0 || tasks.length > 0 ? `Events from last 24h:
+${productivityContext}
+
+${events.length > 0 || tasks.length > 0 ? `*Agent Activity from last 24h:*
 ${events.map((e) => `- ${e.channel}: ${e.text}`).join("\n") || "None"}
 
 Tasks:
-${tasks.map((t) => `- ${t.assigned_to}: ${t.description} [${t.status}]`).join("\n") || "None"}` : "No overnight activity to report."}
+${tasks.map((t) => `- ${t.assigned_to}: ${t.description} [${t.status}]`).join("\n") || "None"}` : "No overnight agent activity to report."}
 
-What's on deck for today? What needs Preston's attention first?`;
+Based on the calendar, emails, and follow-ups above:
+1. What's the most important thing for Preston to handle this morning?
+2. Any meetings today that need prep?
+3. Any urgent follow-ups that can't wait?
+4. What action items from recent calls need attention?`;
 
     const cosResult = await askClaude(AGENTS.cos.systemPrompt, summaryPrompt);
     if (cosResult.success) {
-      await postToChannel("#cos-command", `*Morning Standup - 9am*\n\n${cosResult.text}`);
+      await postToChannel("#cos-command", `*Daily Priorities - 9am*\n\n${cosResult.text}`);
     }
 
     // 2. Product Revenue - Daily Prospecting
@@ -590,9 +639,85 @@ Otherwise, set up tomorrow for closes.`;
   { timezone: "America/Chicago" }
 );
 
+// ===== MEETING REMINDERS - Every 15 minutes during workday =====
+cron.schedule(
+  "*/15 9-17 * * 1-5", // Every 15 min, 9am-5pm, Mon-Fri
+  async () => {
+    if (!isCalendarAvailable()) return;
+
+    const meetingAlert = await getMeetingAlert();
+    if (meetingAlert && meetingAlert.alert) {
+      await postToChannel("#cos-command", meetingAlert.message);
+      console.log(`Meeting reminder sent: ${meetingAlert.meeting.title} in ${meetingAlert.minutesUntil} min`);
+    }
+  },
+  { timezone: "America/Chicago" }
+);
+
+// ===== HOURLY MEETING UPDATE CHECK =====
+cron.schedule(
+  "0 10-17 * * 1-5", // Every hour 10am-5pm, Mon-Fri
+  async () => {
+    if (!isGmailAvailable()) return;
+
+    console.log("Hourly - Checking for meeting updates to share with team...");
+
+    const teamUpdates = await generateTeamMeetingUpdates();
+    if (teamUpdates) {
+      await postToChannel("#cos-command", teamUpdates);
+      console.log("Posted meeting updates to team");
+    }
+  },
+  { timezone: "America/Chicago" }
+);
+
+// ===== AFTERNOON FOLLOW-UP REMINDER - 2pm =====
+cron.schedule(
+  "0 14 * * 1-5", // 2pm Mon-Fri
+  async () => {
+    console.log("2pm - Follow-up reminder check...");
+
+    const highPriority = await getHighPriorityFollowUps();
+    if (highPriority.length > 0) {
+      let message = "*Afternoon Follow-up Reminder*\n\n";
+      message += `You have ${highPriority.length} high priority follow-ups:\n\n`;
+
+      for (const f of highPriority.slice(0, 5)) {
+        message += `- *${f.title}*`;
+        if (f.contact_name) message += ` (${f.contact_name})`;
+        message += "\n";
+        if (f.description) message += `  ${f.description.substring(0, 100)}\n`;
+      }
+
+      await postToChannel("#cos-command", message);
+    }
+  },
+  { timezone: "America/Chicago" }
+);
+
+// ===== EVENING SYNC - 6pm =====
+cron.schedule(
+  "0 18 * * 1-5", // 6pm Mon-Fri
+  async () => {
+    console.log("6pm - Running evening follow-up sync...");
+    await syncFollowUps();
+    console.log("6pm - Evening sync complete");
+  },
+  { timezone: "America/Chicago" }
+);
+
 // Start
 (async () => {
   await app.start();
   console.log("Umbrella agents online");
   console.log("8-hour workday scheduled: 9am, 10:30am, 12pm, 2pm, 3:30pm, 5pm CT (Mon-Fri)");
+
+  if (hasGoogleAuth) {
+    console.log("Email/Calendar integration: ENABLED");
+    console.log("- Meeting reminders: every 15 min");
+    console.log("- Follow-up tracking: active");
+    console.log("- Meeting notes extraction: active");
+  } else {
+    console.log("Email/Calendar integration: DISABLED (add Google OAuth credentials to enable)");
+  }
 })();

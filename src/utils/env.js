@@ -12,6 +12,10 @@ const OPTIONAL_ENV = [
   "GOOGLE_API_KEY",
   "SUPABASE_URL",
   "SUPABASE_SERVICE_KEY",
+  // Google OAuth for Gmail/Calendar
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "GOOGLE_REFRESH_TOKEN",
 ];
 
 function validateEnv() {
@@ -45,6 +49,11 @@ function validateEnv() {
     supabase: {
       url: process.env.SUPABASE_URL || null,
       serviceKey: process.env.SUPABASE_SERVICE_KEY || null,
+    },
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID || null,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET || null,
+      refreshToken: process.env.GOOGLE_REFRESH_TOKEN || null,
     },
   };
 }
