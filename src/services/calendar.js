@@ -10,7 +10,7 @@ let oauth2Client = null;
  * Initialize Google Calendar API
  * Uses same OAuth credentials as Gmail
  */
-function initCalendar(clientId, clientSecret, refreshToken) {
+async function initCalendar(clientId, clientSecret, refreshToken) {
   if (!clientId || !clientSecret || !refreshToken) {
     console.warn("Calendar credentials not provided. Calendar features disabled.");
     return false;
@@ -21,10 +21,19 @@ function initCalendar(clientId, clientSecret, refreshToken) {
     oauth2Client.setCredentials({ refresh_token: refreshToken });
 
     calendar = google.calendar({ version: "v3", auth: oauth2Client });
-    console.log("Google Calendar API initialized");
+
+    // Validate the token by making a test API call
+    console.log("Calendar API: Testing connection...");
+    const calList = await calendar.calendarList.list({ maxResults: 1 });
+    console.log(`Calendar API initialized - ${calList.data.items?.length || 0} calendars accessible`);
     return true;
   } catch (error) {
     console.error("Calendar init error:", error.message);
+    if (error.message.includes("invalid_grant") || error.message.includes("Token has been expired")) {
+      console.error("Calendar OAuth token has expired. Please generate a new refresh token.");
+      console.error("Follow the instructions in docs/GOOGLE_OAUTH_SETUP.md");
+    }
+    calendar = null; // Reset calendar on failure
     return false;
   }
 }

@@ -54,14 +54,8 @@ initGemini(env.gemini.apiKey);
 initSupabase(env.supabase.url, env.supabase.serviceKey);
 
 // Initialize Gmail & Calendar (optional - for email/calendar integration)
+// This is done async in the startup function below
 const hasGoogleAuth = env.google.clientId && env.google.clientSecret && env.google.refreshToken;
-if (hasGoogleAuth) {
-  initGmail(env.google.clientId, env.google.clientSecret, env.google.refreshToken);
-  initCalendar(env.google.clientId, env.google.clientSecret, env.google.refreshToken);
-} else {
-  console.warn("Google OAuth not configured. Email/Calendar features disabled.");
-  console.warn("To enable, set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN");
-}
 
 // Initialize Slack app
 const app = new App({
@@ -709,18 +703,42 @@ cron.schedule(
 
 // Start
 (async () => {
+  // Initialize Google services before starting (async initialization)
+  if (hasGoogleAuth) {
+    console.log("Initializing Google services...");
+    const [gmailResult, calendarResult] = await Promise.all([
+      initGmail(env.google.clientId, env.google.clientSecret, env.google.refreshToken),
+      initCalendar(env.google.clientId, env.google.clientSecret, env.google.refreshToken),
+    ]);
+
+    if (gmailResult) {
+      console.log("Gmail integration: READY");
+    } else {
+      console.error("Gmail integration: FAILED - check your OAuth refresh token");
+    }
+
+    if (calendarResult) {
+      console.log("Calendar integration: READY");
+    } else {
+      console.error("Calendar integration: FAILED - check your OAuth refresh token");
+    }
+  } else {
+    console.warn("Google OAuth not configured. Email/Calendar features disabled.");
+    console.warn("To enable, set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN");
+  }
+
   await app.start();
   console.log("Umbrella agents online");
   console.log("8-hour workday scheduled: 9am, 10:30am, 12pm, 2pm, 3:30pm, 5pm CT (Mon-Fri)");
 
-  if (hasGoogleAuth) {
+  if (isGmailAvailable()) {
     console.log("Email/Calendar integration: ENABLED");
     console.log("- Meeting reminders: every 15 min");
     console.log("- Follow-up tracking: active");
     console.log("- Meeting notes extraction: active");
     console.log("- Interactive email queries: active (DM or @mention the bot)");
   } else {
-    console.log("Email/Calendar integration: DISABLED (add Google OAuth credentials to enable)");
+    console.log("Email/Calendar integration: DISABLED (check logs above for errors)");
   }
 
   console.log("\nInteractive queries enabled:");

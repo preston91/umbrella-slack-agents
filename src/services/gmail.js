@@ -10,7 +10,7 @@ let oauth2Client = null;
  * Initialize Gmail API with OAuth2 credentials
  * Required env vars: GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN
  */
-function initGmail(clientId, clientSecret, refreshToken) {
+async function initGmail(clientId, clientSecret, refreshToken) {
   if (!clientId || !clientSecret || !refreshToken) {
     console.warn("Gmail credentials not provided. Email features disabled.");
     return false;
@@ -21,10 +21,19 @@ function initGmail(clientId, clientSecret, refreshToken) {
     oauth2Client.setCredentials({ refresh_token: refreshToken });
 
     gmail = google.gmail({ version: "v1", auth: oauth2Client });
-    console.log("Gmail API initialized");
+
+    // Validate the token by making a test API call
+    console.log("Gmail API: Testing connection...");
+    const profile = await gmail.users.getProfile({ userId: "me" });
+    console.log(`Gmail API initialized - connected to: ${profile.data.emailAddress}`);
     return true;
   } catch (error) {
     console.error("Gmail init error:", error.message);
+    if (error.message.includes("invalid_grant") || error.message.includes("Token has been expired")) {
+      console.error("Gmail OAuth token has expired. Please generate a new refresh token.");
+      console.error("Follow the instructions in docs/GOOGLE_OAUTH_SETUP.md");
+    }
+    gmail = null; // Reset gmail on failure
     return false;
   }
 }
