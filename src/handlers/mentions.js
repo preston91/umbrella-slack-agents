@@ -8,6 +8,7 @@ const { askConsensus } = require("../services/consensus");
 const { logEvent, getConversation, appendMessage } = require("../services/memory");
 const { processFiles } = require("../services/files");
 const { handleAgentRouting } = require("./routing");
+const { processEmailQuery, isEmailQuery } = require("../services/email-query");
 
 function cleanText(text) {
   return text.replace(/<@.*?>/g, "").trim();
@@ -21,32 +22,40 @@ function hasMultimodalContent(messages) {
 // Route to appropriate provider based on agent config
 // For file/image requests, bypass consensus and use Gemini directly
 async function getAIResponse(agent, messages, options = {}) {
-  const { hasFiles = false } = options;
+  const { hasFiles = false, emailContext = null } = options;
   const provider = agent.provider || "claude";
+
+  // Build system prompt - inject email context if available
+  let systemPrompt = agent.systemPrompt;
+  if (emailContext && emailContext.context) {
+    // Prepend email context to system prompt for this query
+    systemPrompt = `${emailContext.context}\n\n---\n\n*USER'S EMAIL QUESTION:*\nThe user is asking about their email. Use the email context above to provide a helpful, specific answer. Reference actual emails, names, dates, and details from the context.\n\n---\n\n${systemPrompt}`;
+    console.log(`[${agent.name}] Injected email context (${emailContext.intent})`);
+  }
 
   // If there are files (images/PDFs), use Gemini directly - it handles multimodal better
   // and avoids the complexity of consensus synthesis with file content
   if (hasFiles || hasMultimodalContent(messages)) {
     console.log(`[${agent.name}] Files detected - routing directly to Gemini`);
     if (isGeminiAvailable()) {
-      return askGemini(agent.systemPrompt, messages);
+      return askGemini(systemPrompt, messages);
     }
     console.log(`[${agent.name}] Gemini unavailable, falling back to Claude`);
-    return askClaude(agent.systemPrompt, messages);
+    return askClaude(systemPrompt, messages);
   }
 
   switch (provider) {
     case "consensus":
-      return askConsensus(agent.systemPrompt, messages);
+      return askConsensus(systemPrompt, messages);
     case "gemini":
       if (isGeminiAvailable()) {
-        return askGemini(agent.systemPrompt, messages);
+        return askGemini(systemPrompt, messages);
       }
       console.log(`[${agent.name}] Gemini unavailable, falling back to Claude`);
-      return askClaude(agent.systemPrompt, messages);
+      return askClaude(systemPrompt, messages);
     case "claude":
     default:
-      return askClaude(agent.systemPrompt, messages);
+      return askClaude(systemPrompt, messages);
   }
 }
 
@@ -124,6 +133,16 @@ function registerMentionHandler(app) {
     // Show thinking indicator
     const thinkingMsg = await say(`_${agent.name} is thinking..._`);
 
+    // Check if this is an email-related query and fetch context on-demand
+    let emailContext = null;
+    if (isEmailQuery(text)) {
+      console.log(`[${agentKey}] Email query detected, fetching context...`);
+      emailContext = await processEmailQuery(text);
+      if (emailContext) {
+        console.log(`[${agentKey}] Email context fetched: ${emailContext.intent}, ${emailContext.emailCount || 0} emails`);
+      }
+    }
+
     // Fetch conversation history and build messages array
     const history = await getConversation(channelName);
     console.log(`[DEBUG] Conversation history: ${history.length} messages`);
@@ -154,8 +173,9 @@ function registerMentionHandler(app) {
 
     // Get AI response with full conversation context
     // Pass hasFiles flag to route file requests directly to Gemini
+    // Pass emailContext to inject email data for email queries
     const hasFiles = fileData && (fileData.images.length > 0 || fileData.texts.length > 0);
-    const result = await getAIResponse(agent, messages, { hasFiles });
+    const result = await getAIResponse(agent, messages, { hasFiles, emailContext });
 
     // Delete thinking message
     try {
@@ -179,4 +199,59 @@ function registerMentionHandler(app) {
   });
 }
 
-module.exports = { registerMentionHandler };
+/**
+ * Register handler for direct messages to the bot
+ * DMs are routed to the COS agent by default
+ */
+function registerDMHandler(app) {
+  app.event("message", async ({ event, say, client }) => {
+    // Only handle direct messages (IMs)
+    if (event.channel_type !== "im") return;
+
+    // Ignore bot messages and message edits
+    if (event.bot_id || event.subtype) return;
+
+    const text = event.text || "";
+    const agent = AGENTS.cos; // DMs go to COS agent
+
+    console.log(`[DM] Received: ${text.substring(0, 100)}...`);
+
+    // Show thinking indicator
+    const thinkingMsg = await say(`_${agent.name} is thinking..._`);
+
+    // Check if this is an email-related query and fetch context on-demand
+    let emailContext = null;
+    if (isEmailQuery(text)) {
+      console.log(`[DM] Email query detected, fetching context...`);
+      emailContext = await processEmailQuery(text);
+      if (emailContext) {
+        console.log(`[DM] Email context fetched: ${emailContext.intent}, ${emailContext.emailCount || 0} emails`);
+      }
+    }
+
+    // Build messages array with the user's message
+    const messages = [{ role: "user", content: text }];
+
+    // Get AI response with email context if applicable
+    const result = await getAIResponse(agent, messages, { emailContext });
+
+    // Delete thinking message
+    try {
+      await client.chat.delete({
+        channel: event.channel,
+        ts: thinkingMsg.ts,
+      });
+    } catch (e) {
+      // Ignore if we can't delete
+    }
+
+    if (result.success) {
+      const consensusTag = result.consensus ? " [consensus]" : "";
+      await say(`*${agent.name}*${consensusTag}\n_${agent.role}_\n\n${result.text}`);
+    } else {
+      await say(`*${agent.name}* encountered an error: ${result.error}`);
+    }
+  });
+}
+
+module.exports = { registerMentionHandler, registerDMHandler };

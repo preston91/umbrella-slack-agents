@@ -9,7 +9,7 @@ const { initClaude, askClaude, askClaudeWithSearch } = require("./services/claud
 const { initGemini } = require("./services/gemini");
 const { initSupabase } = require("./services/supabase");
 const { getSummaryData, clearAll } = require("./services/memory");
-const { registerMentionHandler } = require("./handlers/mentions");
+const { registerMentionHandler, registerDMHandler } = require("./handlers/mentions");
 const { AGENTS, getDateContext } = require("./config/agents");
 const {
   getUpcomingEvents,
@@ -73,6 +73,7 @@ const app = new App({
 
 // Register handlers
 registerMentionHandler(app);
+registerDMHandler(app); // Handle direct messages to bot
 
 // Helper to post to channel
 async function postToChannel(channel, text) {
@@ -717,7 +718,13 @@ cron.schedule(
     console.log("- Meeting reminders: every 15 min");
     console.log("- Follow-up tracking: active");
     console.log("- Meeting notes extraction: active");
+    console.log("- Interactive email queries: active (DM or @mention the bot)");
   } else {
     console.log("Email/Calendar integration: DISABLED (add Google OAuth credentials to enable)");
   }
+
+  console.log("\nInteractive queries enabled:");
+  console.log("- DM the bot to chat with COS agent");
+  console.log("- @mention in any channel to chat with that channel's agent");
+  console.log("- Ask about emails: 'any updates from [name]?', 'what needs follow-up?', etc.");
 })();
