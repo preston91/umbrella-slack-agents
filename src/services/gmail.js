@@ -158,7 +158,7 @@ async function getRecentEmailsFromHours(hours = 24) {
   if (!gmail) return [];
 
   const afterDate = new Date(Date.now() - hours * 60 * 60 * 1000);
-  const query = `after:${Math.floor(afterDate.getTime() / 1000)}`;
+  const query = `in:inbox after:${Math.floor(afterDate.getTime() / 1000)}`;
 
   return getRecentEmails(50, query);
 }
