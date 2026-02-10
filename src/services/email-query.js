@@ -3,6 +3,7 @@
 
 const {
   isGmailAvailable,
+  getRecentEmails,
   searchEmails,
   getFollowUpEmails,
   getAwaitingResponse,
@@ -22,6 +23,7 @@ const EMAIL_INTENTS = {
   RECENT: "recent", // "what came in today/this morning?"
   ACTION_ITEMS: "action_items", // "what action items from emails?"
   THREAD: "thread", // "show me the thread with [name] about [topic]"
+  ACCESS_CHECK: "access_check", // "can you see my email?"
 };
 
 /**
@@ -30,6 +32,24 @@ const EMAIL_INTENTS = {
  */
 function detectEmailIntent(message) {
   const text = message.toLowerCase();
+
+  // Access check queries - detect first since they're specific
+  // "can you see my email?" "do you have access to my email?" "check my email access"
+  const accessPatterns = [
+    /(?:can\s+you|do\s+you)\s+(?:see|access|read|check|view)\s+(?:my\s+)?(?:email|inbox|mail|gmail)/i,
+    /(?:do\s+you\s+have|got)\s+(?:access\s+to|visibility\s+into)\s+(?:my\s+)?(?:email|inbox|mail)/i,
+    /(?:is\s+)?(?:email|inbox|gmail)\s+(?:access|integration|connection)\s+(?:working|connected|live|enabled)/i,
+    /(?:check|test|verify)\s+(?:my\s+)?(?:email|inbox)\s+(?:access|connection)/i,
+  ];
+
+  for (const pattern of accessPatterns) {
+    if (pattern.test(text)) {
+      return {
+        intent: EMAIL_INTENTS.ACCESS_CHECK,
+        params: {},
+      };
+    }
+  }
 
   // Contact-specific queries
   // "any updates from john?" "emails from acme" "what did sarah say?"
@@ -188,6 +208,9 @@ async function getEmailContextForQuery(intent, params) {
 
   try {
     switch (intent) {
+      case EMAIL_INTENTS.ACCESS_CHECK:
+        return await checkEmailAccessContext();
+
       case EMAIL_INTENTS.CONTACT_UPDATES:
         return await getContactEmailContext(params.contactName);
 
@@ -487,6 +510,62 @@ async function searchEmailContext(topic) {
 }
 
 /**
+ * Check email access - fetches recent emails without time restriction
+ * to verify the connection is working
+ */
+async function checkEmailAccessContext() {
+  // Fetch a few emails from inbox (no time filter) to verify access
+  const emails = await getRecentEmails(5, "in:inbox");
+
+  if (emails.length === 0) {
+    // Try without inbox filter as a fallback
+    const allEmails = await getRecentEmails(5);
+
+    if (allEmails.length === 0) {
+      return {
+        success: true,
+        context: `*EMAIL ACCESS CHECK:*\n\nYes, I have access to your Gmail account and the API connection is working.\n\nHowever, I'm not finding any emails in your inbox. This could mean:\n- Your inbox is empty\n- Emails are in other folders/labels\n- There might be a filtering issue\n\nTry asking me to search for something specific, like "emails from [name]" or "find emails about [topic]".`,
+        emailCount: 0,
+        accessVerified: true,
+      };
+    }
+
+    // Found emails but not in inbox
+    let context = `*EMAIL ACCESS CHECK:*\n\nYes, I have access to your Gmail account and the API connection is working.\n\nYour inbox appears empty, but I found ${allEmails.length} emails in other folders. Here's a sample:\n\n`;
+
+    for (const email of allEmails.slice(0, 3)) {
+      const date = new Date(email.date).toLocaleDateString();
+      context += `- *${email.subject}* (from ${email.from.split("<")[0].trim()}, ${date})\n`;
+    }
+
+    return {
+      success: true,
+      context,
+      emailCount: allEmails.length,
+      accessVerified: true,
+    };
+  }
+
+  // Found emails in inbox - success!
+  let context = `*EMAIL ACCESS CHECK:*\n\nYes, I can see your email! Connection is working perfectly.\n\nHere's a preview of your most recent emails:\n\n`;
+
+  for (const email of emails) {
+    const date = new Date(email.date).toLocaleDateString();
+    const sender = email.from.split("<")[0].trim() || email.from;
+    context += `- *${email.subject}*\n  From: ${sender} (${date})\n  Preview: ${email.snippet.substring(0, 100)}...\n\n`;
+  }
+
+  context += `\nI can help you with:\n- "What came in today?" - Recent emails\n- "Any updates from [name]?" - Emails from specific people\n- "What needs follow-up?" - Starred/flagged emails\n- "Who haven't I heard back from?" - Sent emails awaiting response`;
+
+  return {
+    success: true,
+    context,
+    emailCount: emails.length,
+    accessVerified: true,
+  };
+}
+
+/**
  * Process an email query and return formatted context for AI
  */
 async function processEmailQuery(message) {
@@ -520,4 +599,5 @@ module.exports = {
   getRecentEmailContext,
   getActionItemsContext,
   searchEmailContext,
+  checkEmailAccessContext,
 };
