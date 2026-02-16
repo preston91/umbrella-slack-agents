@@ -18,6 +18,7 @@ const {
  */
 const EMAIL_INTENTS = {
   CONTACT_UPDATES: "contact_updates", // "any updates from [name]?"
+  DRAFT_REPLY: "draft_reply", // "draft a reply to [name]" "help me respond to [name]"
   FOLLOW_UPS: "follow_ups", // "what emails need follow-up?"
   AWAITING_RESPONSE: "awaiting_response", // "who haven't I heard back from?"
   NEEDS_MY_REPLY: "needs_my_reply", // "who haven't I replied to?" "what emails do I owe?"
@@ -50,6 +51,28 @@ function detectEmailIntent(message) {
         intent: EMAIL_INTENTS.ACCESS_CHECK,
         params: {},
       };
+    }
+  }
+
+  // Draft reply queries - must check BEFORE contact queries
+  // "draft a reply to john" "help me respond to acme" "reply to alex's email"
+  const draftReplyPatterns = [
+    /(?:draft|write|help\s+(?:me\s+)?(?:with|write))\s+(?:a\s+)?(?:reply|response|email)\s+(?:to|for)\s+([a-z\s]+?)(?:\?|$|\.)/i,
+    /(?:respond|reply)\s+to\s+([a-z\s]+?)(?:'s)?\s*(?:email)?(?:\?|$|\.)/i,
+    /(?:help\s+me\s+)?(?:respond|reply)\s+to\s+([a-z\s]+?)(?:\?|$|\.)/i,
+    /(?:what\s+should\s+I\s+(?:say|write|reply))\s+to\s+([a-z\s]+?)(?:\?|$|\.)/i,
+  ];
+
+  for (const pattern of draftReplyPatterns) {
+    const match = text.match(pattern);
+    if (match) {
+      const contactName = match[1].trim();
+      if (!["today", "yesterday", "this", "that", "the"].includes(contactName)) {
+        return {
+          intent: EMAIL_INTENTS.DRAFT_REPLY,
+          params: { contactName },
+        };
+      }
     }
   }
 
@@ -236,6 +259,9 @@ async function getEmailContextForQuery(intent, params) {
       case EMAIL_INTENTS.CONTACT_UPDATES:
         return await getContactEmailContext(params.contactName);
 
+      case EMAIL_INTENTS.DRAFT_REPLY:
+        return await getDraftReplyContext(params.contactName);
+
       case EMAIL_INTENTS.FOLLOW_UPS:
         return await getFollowUpContext();
 
@@ -267,7 +293,7 @@ async function getEmailContextForQuery(intent, params) {
 }
 
 /**
- * Get emails from a specific contact
+ * Get emails from a specific contact - includes FULL email bodies for drafting replies
  */
 async function getContactEmailContext(contactName) {
   const emails = await searchEmails(contactName, 15);
@@ -286,20 +312,35 @@ async function getContactEmailContext(contactName) {
   const received = emails.filter((e) => e.from.toLowerCase().includes(contactName.toLowerCase()));
   const sent = emails.filter((e) => e.to?.toLowerCase().includes(contactName.toLowerCase()));
 
+  // Show the most recent received email with FULL BODY (for context to draft replies)
   if (received.length > 0) {
-    context += `*Received from ${contactName}:*\n`;
-    for (const email of received.slice(0, 5)) {
-      const date = new Date(email.date).toLocaleDateString();
-      context += `- ${date}: "${email.subject}"\n  Preview: ${email.snippet.substring(0, 150)}...\n\n`;
+    const mostRecent = received[0];
+    const date = new Date(mostRecent.date).toLocaleDateString();
+    context += `*MOST RECENT FROM ${contactName.toUpperCase()}:*\n`;
+    context += `From: ${mostRecent.from}\n`;
+    context += `Date: ${date}\n`;
+    context += `Subject: ${mostRecent.subject}\n`;
+    context += `\n--- FULL EMAIL ---\n${mostRecent.body || mostRecent.snippet}\n--- END EMAIL ---\n\n`;
+
+    // List other emails briefly
+    if (received.length > 1) {
+      context += `*Other emails from ${contactName}:*\n`;
+      for (const email of received.slice(1, 4)) {
+        const d = new Date(email.date).toLocaleDateString();
+        context += `- ${d}: "${email.subject}"\n`;
+      }
+      context += "\n";
     }
   }
 
+  // Show sent emails more briefly
   if (sent.length > 0) {
-    context += `*Sent to ${contactName}:*\n`;
-    for (const email of sent.slice(0, 5)) {
+    context += `*Your emails to ${contactName}:*\n`;
+    for (const email of sent.slice(0, 3)) {
       const date = new Date(email.date).toLocaleDateString();
-      context += `- ${date}: "${email.subject}"\n  Preview: ${email.snippet.substring(0, 150)}...\n\n`;
+      context += `- ${date}: "${email.subject}"\n`;
     }
+    context += "\n";
   }
 
   // Extract any action items
@@ -315,6 +356,49 @@ async function getContactEmailContext(contactName) {
     success: true,
     context,
     emailCount: emails.length,
+  };
+}
+
+/**
+ * Get context for drafting a reply - fetches full email and asks AI to help draft response
+ */
+async function getDraftReplyContext(contactName) {
+  const emails = await searchEmails(contactName, 10);
+
+  // Find the most recent email FROM them (not from us)
+  const received = emails.filter((e) => e.from.toLowerCase().includes(contactName.toLowerCase()));
+
+  if (received.length === 0) {
+    return {
+      success: true,
+      context: `*DRAFT REPLY - ${contactName}:*\nNo emails found from "${contactName}" to reply to.`,
+      isEmpty: true,
+    };
+  }
+
+  const email = received[0];
+  const date = new Date(email.date).toLocaleDateString();
+
+  let context = `*DRAFT REPLY REQUEST*\n\n`;
+  context += `The user wants to reply to this email. Read it carefully and draft a thoughtful response.\n\n`;
+  context += `--- EMAIL TO REPLY TO ---\n`;
+  context += `From: ${email.from}\n`;
+  context += `Date: ${date}\n`;
+  context += `Subject: ${email.subject}\n\n`;
+  context += `${email.body || email.snippet}\n`;
+  context += `--- END EMAIL ---\n\n`;
+  context += `INSTRUCTIONS: Based on this email, draft a reply. Consider:\n`;
+  context += `- What are they asking for or saying?\n`;
+  context += `- What's the appropriate tone?\n`;
+  context += `- What key points should the reply address?\n`;
+  context += `\nProvide a draft reply the user can review and send.`;
+
+  return {
+    success: true,
+    context,
+    intent: "draft_reply",
+    emailCount: 1,
+    originalEmail: email,
   };
 }
 
@@ -660,6 +744,7 @@ module.exports = {
   getEmailContextForQuery,
   // Individual context fetchers (for direct use)
   getContactEmailContext,
+  getDraftReplyContext,
   getFollowUpContext,
   getAwaitingResponseContext,
   getMyPendingRepliesContext,
