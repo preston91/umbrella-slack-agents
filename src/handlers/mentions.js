@@ -121,8 +121,10 @@ function registerMentionHandler(app) {
       console.log(`[DEBUG] First 1000 chars: ${fullText.substring(0, 1000)}`);
     }
 
-    // Log user message to conversation history
-    await appendMessage(channelName, "user", fullText, null);
+    // Log user message to conversation history (only if non-empty)
+    if (fullText && fullText.trim()) {
+      await appendMessage(channelName, "user", fullText, null);
+    }
     console.log(`[${agentKey}] #${channelName}: ${text}${files && files.length > 0 ? ` (+${files.length} files)` : ""}`);
 
     // Inter-agent routing - ALL agents can route to each other
@@ -152,10 +154,14 @@ function registerMentionHandler(app) {
     const hasImages = fileData && fileData.images.length > 0;
     const historyLimit = hasImages ? 5 : 20; // Less history when analyzing images
 
-    const messages = history.slice(-historyLimit).map((msg) => ({
-      role: msg.role === "user" ? "user" : "assistant",
-      content: msg.content,
-    }));
+    // Filter out any messages with empty content to avoid Claude API errors
+    const messages = history
+      .slice(-historyLimit)
+      .filter((msg) => msg.content && (typeof msg.content === "string" ? msg.content.trim() : true))
+      .map((msg) => ({
+        role: msg.role === "user" ? "user" : "assistant",
+        content: msg.content,
+      }));
 
     if (hasImages) {
       console.log(`[DEBUG] Image detected - limited history to ${historyLimit} messages to prioritize image analysis`);

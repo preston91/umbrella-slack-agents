@@ -36,6 +36,24 @@ async function askClaude(systemPrompt, userTextOrMessages, options = {}) {
     messages = [{ role: "user", content: String(userTextOrMessages) }];
   }
 
+  // Filter out any messages with empty content to avoid API errors
+  messages = messages.filter((msg) => {
+    if (!msg.content) return false;
+    if (typeof msg.content === "string") return msg.content.trim().length > 0;
+    if (Array.isArray(msg.content)) return msg.content.length > 0;
+    return true;
+  });
+
+  // If no valid messages remain, return an error
+  if (messages.length === 0) {
+    return {
+      success: false,
+      text: null,
+      error: "No valid message content to send",
+      model,
+    };
+  }
+
   try {
     const requestParams = {
       model,

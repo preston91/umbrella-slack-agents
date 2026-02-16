@@ -115,6 +115,12 @@ async function getConversation(channelName) {
 async function appendMessage(channelName, role, content, agent = null) {
   if (!supabase) return;
 
+  // Don't store empty messages - they cause Claude API errors when retrieved
+  if (!content || (typeof content === "string" && !content.trim())) {
+    console.log(`[supabase] Skipping empty message for ${channelName}`);
+    return;
+  }
+
   try {
     const message = {
       role,

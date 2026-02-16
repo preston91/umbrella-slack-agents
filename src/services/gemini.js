@@ -61,13 +61,31 @@ async function askGemini(systemPrompt, userTextOrMessages, options = {}) {
   if (typeof userTextOrMessages === "string") {
     contents = [{ role: "user", parts: [{ text: userTextOrMessages }] }];
   } else if (Array.isArray(userTextOrMessages)) {
+    // Filter out messages with empty content before converting
+    const filteredMessages = userTextOrMessages.filter((msg) => {
+      if (!msg.content) return false;
+      if (typeof msg.content === "string") return msg.content.trim().length > 0;
+      if (Array.isArray(msg.content)) return msg.content.length > 0;
+      return true;
+    });
+
     // Convert from Claude format {role, content} to Gemini format {role, parts}
-    contents = userTextOrMessages.map((msg) => ({
+    contents = filteredMessages.map((msg) => ({
       role: msg.role === "assistant" ? "model" : "user",
       parts: contentToParts(msg.content),
     }));
   } else {
     contents = [{ role: "user", parts: [{ text: String(userTextOrMessages) }] }];
+  }
+
+  // If no valid messages remain, return an error
+  if (contents.length === 0) {
+    return {
+      success: false,
+      text: null,
+      error: "No valid message content to send",
+      model,
+    };
   }
 
   try {
