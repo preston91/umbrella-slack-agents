@@ -81,6 +81,45 @@ async function postToChannel(channel, text) {
 // ===== 8-HOUR WORKDAY SCHEDULE (9am - 5pm CT) =====
 // All times in America/Chicago timezone
 
+// ===== 7:00 AM - CONTENT SIGNAL MORNING BRIEFING =====
+cron.schedule(
+  "0 7 * * 1-5", // Mon-Fri at 7am
+  async () => {
+    console.log("7am - Content Signal morning briefing...");
+    const dateContext = getDateContext();
+
+    const contentPrompt = `${dateContext}It's 7am - time for your daily Motion Signal briefing.
+
+Use web search to find today's most strategically significant developments across:
+
+1. *Venture + M&A* - acquisitions, platform shifts, ecosystem moves
+2. *Design + Cultural Taste* - creative direction changes, brand repositioning, product redesigns
+3. *Tech + Business Models* - new models, distribution innovations, platform economics
+4. *Sports + Entertainment Economics* - deal structures, ownership moves, media rights
+5. *Cross-domain Strategic Signals* - patterns most people miss
+
+*REQUIREMENTS:*
+- 10 items max, ranked by strategic importance
+- For each item include:
+  * What happened (one line)
+  * Why it matters (one line)
+  * What capability is being gained or lost
+  * Long-term implication
+  * 1 contrarian insight
+
+No fluff. No hype. Operator-level intelligence only.
+The goal: Give me leverage at the intersection of tech, culture, sports, and entertainment.`;
+
+    const contentResult = await askClaudeWithSearch(AGENTS.content.systemPrompt, contentPrompt);
+    if (contentResult.success) {
+      await postToChannel("#content-signal", `*Motion Signal Briefing - 7am*\n\n${contentResult.text}`);
+    }
+
+    console.log("7am content briefing completed");
+  },
+  { timezone: "America/Chicago" }
+);
+
 // ===== 8:45 AM - PRE-STANDUP SYNC =====
 cron.schedule(
   "45 8 * * 1-5", // Mon-Fri at 8:45am
@@ -219,6 +258,26 @@ For each opportunity, specify:
     const opsResult = await askClaude(AGENTS.ops.systemPrompt, opsPrompt);
     if (opsResult.success) {
       await postToChannel("#ops-finance", `*Morning Cash Check - 9am*\n\n${opsResult.text}`);
+    }
+
+    // 6. Content Agent - Surface content angles from morning signals
+    const contentAnglesPrompt = `${dateContext}It's 9am - review this morning's Motion Signal briefing and surface content angles.
+
+Based on what you found at 7am, identify:
+1. *Substack angles* - 2-3 topics worth a deeper essay (from my POV: tech, sports, entertainment, building, culture)
+2. *IG potential* - anything visually compelling or story-worthy from the signals
+3. *The thread* - one pattern or insight that connects multiple signals
+
+For each angle, give me:
+- The hook (one provocative sentence)
+- Why only I would write this (my unique POV)
+- The "most people think X, I think Y" framing
+
+Keep it tight. I want signal, not homework.`;
+
+    const contentAnglesResult = await askClaudeWithSearch(AGENTS.content.systemPrompt, contentAnglesPrompt);
+    if (contentAnglesResult.success) {
+      await postToChannel("#content-signal", `*Content Angles - 9am*\n\n${contentAnglesResult.text}`);
     }
 
     clearAll();
@@ -418,6 +477,23 @@ Review existing talent in the network for upcoming moments:
     const momentsResult = await askClaudeWithSearch(AGENTS.moments.systemPrompt, momentsPrompt);
     if (momentsResult.success) {
       await postToChannel("#moments", `*Talent Research - 12pm*\n\n${momentsResult.text}`);
+    }
+
+    // Content Agent - Midday cultural pulse
+    const culturalPulsePrompt = `${dateContext}It's noon - quick cultural pulse check.
+
+Use web search to scan what's moving RIGHT NOW:
+- Any breaking news that changes this morning's signals?
+- Anything going viral that's worth noting (not just trending, but strategically interesting)?
+- Any real-time developments in tech, sports, entertainment, or culture?
+
+Only surface things worth knowing. If nothing significant moved, say "quiet afternoon" and keep it moving.
+
+If you find something: one line on what it is, one line on why it matters for content.`;
+
+    const culturalPulseResult = await askClaudeWithSearch(AGENTS.content.systemPrompt, culturalPulsePrompt);
+    if (culturalPulseResult.success) {
+      await postToChannel("#content-signal", `*Cultural Pulse - 12pm*\n\n${culturalPulseResult.text}`);
     }
 
     console.log("12pm tasks completed");
@@ -694,9 +770,37 @@ cron.schedule(
 cron.schedule(
   "0 18 * * 1-5", // 6pm Mon-Fri
   async () => {
-    console.log("6pm - Running evening follow-up sync...");
+    console.log("6pm - Running evening tasks...");
+
+    // Follow-up sync
     await syncFollowUps();
-    console.log("6pm - Evening sync complete");
+
+    // Content Agent - Evening content gems
+    const dateContext = getDateContext();
+    const eveningContentPrompt = `${dateContext}It's 6pm - surface evening content gems.
+
+Use web search to find 2-3 things worth sharing on IG tonight or saving for later:
+
+*Looking for:*
+- Visually striking: architecture, design, art, fashion, sport moments
+- Culturally significant: something that captures a mood or moment
+- Strategically interesting: a move that tells a bigger story
+
+*For each gem:*
+- What it is (one line)
+- Why it's worth posting (the deeper story)
+- Caption direction (cryptic, minimal, provocative - never corny)
+
+Think: What would Pharrell repost? What would make someone pause mid-scroll?
+
+If nothing hits, say "nothing worth posting tonight" - don't force it.`;
+
+    const eveningContentResult = await askClaudeWithSearch(AGENTS.content.systemPrompt, eveningContentPrompt);
+    if (eveningContentResult.success) {
+      await postToChannel("#content-signal", `*Evening Gems - 6pm*\n\n${eveningContentResult.text}`);
+    }
+
+    console.log("6pm - Evening tasks complete");
   },
   { timezone: "America/Chicago" }
 );
@@ -730,6 +834,7 @@ cron.schedule(
   await app.start();
   console.log("Umbrella agents online");
   console.log("8-hour workday scheduled: 9am, 10:30am, 12pm, 2pm, 3:30pm, 5pm CT (Mon-Fri)");
+  console.log("Content Signal schedule: 7am, 9am, 12pm, 6pm CT (Mon-Fri)");
 
   if (isGmailAvailable()) {
     console.log("Email/Calendar integration: ENABLED");

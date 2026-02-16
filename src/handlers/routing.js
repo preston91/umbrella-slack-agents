@@ -45,6 +45,11 @@ const AGENT_ALIASES = {
   product_cs: "product_cs",
   cs: "product_cs",
   support: "product_cs",
+  // Content
+  content: "content",
+  signal: "content",
+  substack: "content",
+  voice: "content",
 };
 
 async function handleAgentRouting(text, fromAgent, client, say) {
@@ -63,7 +68,7 @@ async function handleAgentRouting(text, fromAgent, client, say) {
   // Resolve alias to actual agent key
   const targetKey = AGENT_ALIASES[targetAlias];
   if (!targetKey) {
-    await say(`Unable to route - unknown agent "${targetAlias}". Try: uhg, moments, relationships, revenue, cos, ops, fundraising`);
+    await say(`Unable to route - unknown agent "${targetAlias}". Try: uhg, moments, relationships, revenue, cos, ops, fundraising, content`);
     return true;
   }
 
