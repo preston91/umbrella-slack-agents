@@ -247,6 +247,62 @@ async function getAwaitingResponse() {
 }
 
 /**
+ * Get emails YOU received but haven't replied to
+ * The inverse of getAwaitingResponse - tracks your pending replies
+ */
+async function getUnansweredInbound() {
+  if (!gmail) return [];
+
+  try {
+    // Get inbox emails from last 7 days
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const query = `in:inbox category:primary after:${Math.floor(sevenDaysAgo.getTime() / 1000)}`;
+
+    const inboxEmails = await getRecentEmails(50, query);
+    const unanswered = [];
+
+    for (const email of inboxEmails) {
+      // Check the thread to see if we replied
+      const thread = await gmail.users.threads.get({
+        userId: "me",
+        id: email.threadId,
+      });
+
+      const messages = thread.data.messages || [];
+      if (messages.length === 0) continue;
+
+      const lastMessage = messages[messages.length - 1];
+
+      // If last message is NOT from us, we haven't replied yet
+      if (lastMessage && !lastMessage.labelIds?.includes("SENT")) {
+        // Calculate days since received
+        const lastMsgDate = lastMessage.payload?.headers?.find(
+          (h) => h.name.toLowerCase() === "date"
+        )?.value;
+        const daysSinceReceived = lastMsgDate
+          ? Math.floor((Date.now() - new Date(lastMsgDate).getTime()) / (1000 * 60 * 60 * 24))
+          : 0;
+
+        // Only include if older than 1 day (give yourself time to respond)
+        if (daysSinceReceived >= 1) {
+          unanswered.push({
+            ...email,
+            daysSinceReceived,
+            threadMessageCount: messages.length,
+          });
+        }
+      }
+    }
+
+    // Sort by days since received (oldest first = most urgent)
+    return unanswered.sort((a, b) => b.daysSinceReceived - a.daysSinceReceived);
+  } catch (error) {
+    console.error("Gmail getUnansweredInbound error:", error.message);
+    return [];
+  }
+}
+
+/**
  * Search emails by contact name or company
  */
 async function searchEmails(searchTerm, maxResults = 10) {
@@ -361,16 +417,28 @@ async function getEmailContextPrompt() {
   if (!gmail) return "Email integration not configured.";
 
   try {
-    const [recent, followUps, awaiting] = await Promise.all([
+    const [recent, followUps, awaiting, unanswered] = await Promise.all([
       getRecentEmailsFromHours(24),
       getFollowUpEmails(),
       getAwaitingResponse(),
+      getUnansweredInbound(),
     ]);
 
     let prompt = "*EMAIL CONTEXT:*\n\n";
 
+    // PRIORITY: Emails you haven't replied to (your pending responses)
+    prompt += "*🚨 YOU NEED TO REPLY TO:*\n";
+    if (unanswered.length > 0) {
+      for (const email of unanswered.slice(0, 7)) {
+        const urgency = email.daysSinceReceived >= 3 ? "⚠️ OVERDUE" : "";
+        prompt += `- From: ${email.from}\n  Subject: ${email.subject}\n  Waiting: ${email.daysSinceReceived} days ${urgency}\n\n`;
+      }
+    } else {
+      prompt += "All caught up - no pending replies needed!\n";
+    }
+
     // Recent emails summary
-    prompt += "*Recent Emails (last 24h):*\n";
+    prompt += "\n*Recent Emails (last 24h):*\n";
     if (recent.length > 0) {
       for (const email of recent.slice(0, 10)) {
         prompt += `- From: ${email.from}\n  Subject: ${email.subject}\n  Preview: ${email.snippet.substring(0, 100)}...\n\n`;
@@ -394,7 +462,7 @@ async function getEmailContextPrompt() {
       prompt += "No flagged follow-ups.\n";
     }
 
-    // Awaiting response
+    // Awaiting response (emails YOU sent)
     prompt += "\n*Awaiting Response (sent, no reply):*\n";
     if (awaiting.length > 0) {
       for (const email of awaiting.slice(0, 5)) {
@@ -419,6 +487,7 @@ module.exports = {
   getFollowUpEmails,
   getRecentEmailsFromHours,
   getAwaitingResponse,
+  getUnansweredInbound,
   searchEmails,
   getEmailThread,
   createDraft,

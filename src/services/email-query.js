@@ -7,6 +7,7 @@ const {
   searchEmails,
   getFollowUpEmails,
   getAwaitingResponse,
+  getUnansweredInbound,
   getRecentEmailsFromHours,
   extractActionItems,
   getEmailThread,
@@ -19,6 +20,7 @@ const EMAIL_INTENTS = {
   CONTACT_UPDATES: "contact_updates", // "any updates from [name]?"
   FOLLOW_UPS: "follow_ups", // "what emails need follow-up?"
   AWAITING_RESPONSE: "awaiting_response", // "who haven't I heard back from?"
+  NEEDS_MY_REPLY: "needs_my_reply", // "who haven't I replied to?" "what emails do I owe?"
   SEARCH: "search", // "find emails about [topic]"
   RECENT: "recent", // "what came in today/this morning?"
   ACTION_ITEMS: "action_items", // "what action items from emails?"
@@ -92,12 +94,11 @@ function detectEmailIntent(message) {
     }
   }
 
-  // Awaiting response queries
-  // "who haven't I heard back from?" "waiting on responses" "unanswered emails"
+  // Awaiting response queries (emails YOU sent, waiting for THEIR reply)
+  // "who haven't I heard back from?" "waiting on responses"
   const awaitingPatterns = [
     /(?:who|which|what)\s+(?:haven't\s+I|have\s+I\s+not)\s+(?:heard\s+back|gotten\s+a\s+response)/i,
     /(?:waiting|pending)\s+(?:on|for)\s+(?:responses?|replies?)/i,
-    /(?:unanswered|unreplied)\s+emails?/i,
     /(?:emails?\s+)?(?:awaiting|waiting\s+for)\s+(?:response|reply)/i,
     /(?:who\s+)?(?:owes\s+me|needs\s+to\s+respond)/i,
   ];
@@ -106,6 +107,27 @@ function detectEmailIntent(message) {
     if (pattern.test(text)) {
       return {
         intent: EMAIL_INTENTS.AWAITING_RESPONSE,
+        params: {},
+      };
+    }
+  }
+
+  // Needs MY reply queries (emails THEY sent, waiting for YOUR reply)
+  // "who haven't I replied to?" "what emails do I owe?" "who am I ghosting?"
+  const needsMyReplyPatterns = [
+    /(?:who|what)\s+(?:haven't\s+I|have\s+I\s+not)\s+(?:replied|responded|written\s+back)/i,
+    /(?:emails?|people)\s+(?:I\s+)?(?:need\s+to|should|owe|haven't)\s+(?:reply|respond|write\s+back)/i,
+    /(?:who\s+)?(?:am\s+I|I'm)\s+(?:ghosting|ignoring)/i,
+    /(?:unanswered|unreplied)\s+(?:emails?\s+)?(?:from|in\s+my\s+inbox)/i,
+    /(?:what|which)\s+(?:emails?\s+)?(?:do\s+I\s+owe|need\s+my\s+(?:reply|response))/i,
+    /(?:inbox|emails?)\s+(?:I\s+)?(?:need\s+to|should)\s+(?:answer|reply|respond)/i,
+    /(?:pending|outstanding)\s+(?:replies|responses)\s+(?:from\s+me|I\s+owe)/i,
+  ];
+
+  for (const pattern of needsMyReplyPatterns) {
+    if (pattern.test(text)) {
+      return {
+        intent: EMAIL_INTENTS.NEEDS_MY_REPLY,
         params: {},
       };
     }
@@ -219,6 +241,9 @@ async function getEmailContextForQuery(intent, params) {
 
       case EMAIL_INTENTS.AWAITING_RESPONSE:
         return await getAwaitingResponseContext();
+
+      case EMAIL_INTENTS.NEEDS_MY_REPLY:
+        return await getMyPendingRepliesContext();
 
       case EMAIL_INTENTS.RECENT:
         return await getRecentEmailContext(params.hours);
@@ -370,6 +395,47 @@ async function getAwaitingResponseContext() {
     success: true,
     context,
     emailCount: awaiting.length,
+    overdueCount: overdue,
+  };
+}
+
+/**
+ * Get emails YOU need to reply to (received but not responded)
+ */
+async function getMyPendingRepliesContext() {
+  const unanswered = await getUnansweredInbound();
+
+  if (unanswered.length === 0) {
+    return {
+      success: true,
+      context: "*EMAILS NEEDING YOUR REPLY:*\nYou're all caught up! No pending replies needed.",
+      isEmpty: true,
+    };
+  }
+
+  let context = `*🚨 EMAILS NEEDING YOUR REPLY (${unanswered.length}):*\n\n`;
+
+  for (const email of unanswered.slice(0, 10)) {
+    const urgency = email.daysSinceReceived >= 3 ? " ⚠️ OVERDUE" : "";
+    const sender = email.from.split("<")[0].trim() || email.from;
+
+    context += `*From:* ${sender}${urgency}\n`;
+    context += `*Subject:* ${email.subject}\n`;
+    context += `*Waiting:* ${email.daysSinceReceived} days\n`;
+    context += `*Preview:* ${email.snippet.substring(0, 150)}...\n`;
+    context += "\n---\n\n";
+  }
+
+  // Summary
+  const overdue = unanswered.filter((e) => e.daysSinceReceived >= 3).length;
+  if (overdue > 0) {
+    context += `\n*Summary:* ${overdue} emails have been waiting 3+ days for your reply - prioritize these!\n`;
+  }
+
+  return {
+    success: true,
+    context,
+    emailCount: unanswered.length,
     overdueCount: overdue,
   };
 }
@@ -555,7 +621,7 @@ async function checkEmailAccessContext() {
     context += `- *${email.subject}*\n  From: ${sender} (${date})\n  Preview: ${email.snippet.substring(0, 100)}...\n\n`;
   }
 
-  context += `\nI can help you with:\n- "What came in today?" - Recent emails\n- "Any updates from [name]?" - Emails from specific people\n- "What needs follow-up?" - Starred/flagged emails\n- "Who haven't I heard back from?" - Sent emails awaiting response`;
+  context += `\nI can help you with:\n- "What came in today?" - Recent emails\n- "Any updates from [name]?" - Emails from specific people\n- "What needs follow-up?" - Starred/flagged emails\n- "Who haven't I heard back from?" - Sent emails awaiting response\n- "Who haven't I replied to?" - Emails waiting for YOUR reply`;
 
   return {
     success: true,
@@ -596,6 +662,7 @@ module.exports = {
   getContactEmailContext,
   getFollowUpContext,
   getAwaitingResponseContext,
+  getMyPendingRepliesContext,
   getRecentEmailContext,
   getActionItemsContext,
   searchEmailContext,
