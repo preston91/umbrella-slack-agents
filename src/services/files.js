@@ -65,8 +65,12 @@ async function processFiles(files, botToken) {
     // Handle different file types
     if (mimeType.startsWith("image/")) {
       // Image - prepare for Claude vision
-      results.images.push(imageToBase64(buffer, mimeType));
-      console.log(`[files] Image processed: ${fileName}`);
+      const base64Image = imageToBase64(buffer, mimeType);
+      results.images.push(base64Image);
+      // Log image size to help debug vision issues
+      const imageSizeKB = Math.round(buffer.length / 1024);
+      const base64Length = base64Image.source.data.length;
+      console.log(`[files] Image processed: ${fileName} (${imageSizeKB}KB, ${base64Length} base64 chars)`);
     } else if (mimeType === "application/pdf") {
       // PDF - extract text
       const text = await extractPdfText(buffer);

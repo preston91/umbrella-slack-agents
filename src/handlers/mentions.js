@@ -38,10 +38,11 @@ async function getAIResponse(agent, messages, options = {}) {
   if (hasFiles || hasMultimodalContent(messages)) {
     console.log(`[${agent.name}] Files detected - routing directly to Gemini`);
     // Add image analysis priority to system prompt when files are present
-    const imageSystemAddition = `\n\nIMAGE ANALYSIS PRIORITY: When the user shares an image, you must carefully analyze the actual visual content of the image and base your response on what you see. Do NOT rely on conversation history or prior context to describe image content - look at the actual image. If the image shows a document, email, or screenshot, read and describe the actual content shown in the image.`;
+    const imageSystemAddition = `\n\nIMAGE ANALYSIS PRIORITY: When the user shares an image, you must carefully analyze the actual visual content of the image and base your response on what you see. Do NOT rely on conversation history or prior context to describe image content - look at the actual image. If the image shows a document, email, or screenshot, read and describe the actual content shown in the image.\n\nCRITICAL - NO HALLUCINATION: If you cannot clearly read or see the content in the image, you MUST say "I'm having trouble reading this image clearly" rather than guessing or making up content. NEVER describe content that you don't actually see in the image. If the image is blurry, too small, or unclear, admit it.`;
     const fileAwarePrompt = systemPrompt + imageSystemAddition;
     if (isGeminiAvailable()) {
-      return askGemini(fileAwarePrompt, messages);
+      // Use a more capable model for vision tasks - gemini-2.0-flash can struggle with detailed image analysis
+      return askGemini(fileAwarePrompt, messages, { model: "gemini-2.0-flash" });
     }
     console.log(`[${agent.name}] Gemini unavailable, falling back to Claude`);
     return askClaude(fileAwarePrompt, messages);
@@ -150,10 +151,19 @@ function registerMentionHandler(app) {
     const history = await getConversation(channelName);
     console.log(`[DEBUG] Conversation history: ${history.length} messages`);
 
-    const messages = history.slice(-20).map((msg) => ({
+    // When images are shared, limit history to prevent old context from interfering
+    // with image analysis. The image should be the primary context.
+    const hasImages = fileData && fileData.images.length > 0;
+    const historyLimit = hasImages ? 5 : 20; // Less history when analyzing images
+
+    const messages = history.slice(-historyLimit).map((msg) => ({
       role: msg.role === "user" ? "user" : "assistant",
       content: msg.content,
     }));
+
+    if (hasImages) {
+      console.log(`[DEBUG] Image detected - limited history to ${historyLimit} messages to prioritize image analysis`);
+    }
 
     console.log(`[DEBUG] Messages being sent to AI: ${messages.length}`);
 
@@ -162,7 +172,7 @@ function registerMentionHandler(app) {
     if (fileData && fileData.images.length > 0) {
       // Multi-modal content with images for Claude/Gemini vision
       // Add explicit instruction to prioritize image analysis over conversation context
-      const imageInstruction = `IMPORTANT: The user has shared ${fileData.images.length === 1 ? "an image" : `${fileData.images.length} images`}. You MUST carefully analyze the actual content shown in the image(s) before responding. Base your response on what you see IN THE IMAGE, not on previous conversation context or assumptions. If the image shows an email, read and describe the actual email content from the image.`;
+      const imageInstruction = `IMPORTANT: The user has shared ${fileData.images.length === 1 ? "an image" : `${fileData.images.length} images`}. You MUST carefully analyze the actual content shown in the image(s) before responding. Base your response on what you see IN THE IMAGE, not on previous conversation context or assumptions. If the image shows an email, read and describe the actual email content from the image.\n\nCRITICAL: If you cannot clearly read the image content, SAY SO. Do not make up or guess content. If the image is unclear, blurry, or you cannot read the text, respond with "I'm having trouble reading this image clearly - could you share a larger/clearer version?"`;
       const textWithInstruction = fullText
         ? `${imageInstruction}\n\nUser's message: ${fullText}`
         : imageInstruction;
@@ -183,6 +193,10 @@ function registerMentionHandler(app) {
     // Pass hasFiles flag to route file requests directly to Gemini
     // Pass emailContext to inject email data for email queries
     const hasFiles = fileData && (fileData.images.length > 0 || fileData.texts.length > 0);
+    if (hasFiles) {
+      console.log(`[DEBUG] Sending to AI with ${fileData.images.length} images, ${fileData.texts.length} text files`);
+      console.log(`[DEBUG] Image instruction included in message`);
+    }
     const result = await getAIResponse(agent, messages, { hasFiles, emailContext });
 
     // Delete thinking message
