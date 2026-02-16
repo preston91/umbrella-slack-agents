@@ -38,7 +38,7 @@ async function getAIResponse(agent, messages, options = {}) {
   if (hasFiles || hasMultimodalContent(messages)) {
     console.log(`[${agent.name}] Files detected - routing to Claude for vision (better at reading images)`);
     // Add image analysis priority to system prompt when files are present
-    const imageSystemAddition = `\n\nIMAGE ANALYSIS PRIORITY: When the user shares an image, you must carefully analyze the actual visual content of the image and base your response on what you see. Do NOT rely on conversation history or prior context to describe image content - look at the actual image. If the image shows a document, email, or screenshot, read and describe the actual content shown in the image.\n\nCRITICAL - NO HALLUCINATION: If you cannot clearly read or see the content in the image, you MUST say "I'm having trouble reading this image clearly" rather than guessing or making up content. NEVER describe content that you don't actually see in the image. If the image is blurry, too small, or unclear, admit it.`;
+    const imageSystemAddition = `\n\nIMAGE ANALYSIS PRIORITY: When the user shares an image, carefully analyze and READ the actual visual content. If it's a screenshot of an email, document, or text - read it and extract the key information. Be confident about what you CAN see. Only note uncertainty for specific words or sections that are genuinely illegible. Do not default to "I can't read this" - make your best effort to extract the content.`;
     const fileAwarePrompt = systemPrompt + imageSystemAddition;
     // Claude is primary for vision - better at reading text in screenshots and less hallucination
     return askClaude(fileAwarePrompt, messages);
@@ -174,7 +174,7 @@ function registerMentionHandler(app) {
     if (fileData && fileData.images.length > 0) {
       // Multi-modal content with images for Claude/Gemini vision
       // Add explicit instruction to prioritize image analysis over conversation context
-      const imageInstruction = `IMPORTANT: The user has shared ${fileData.images.length === 1 ? "an image" : `${fileData.images.length} images`}. You MUST carefully analyze the actual content shown in the image(s) before responding. Base your response on what you see IN THE IMAGE, not on previous conversation context or assumptions. If the image shows an email, read and describe the actual email content from the image.\n\nCRITICAL: If you cannot clearly read the image content, SAY SO. Do not make up or guess content. If the image is unclear, blurry, or you cannot read the text, respond with "I'm having trouble reading this image clearly - could you share a larger/clearer version?"`;
+      const imageInstruction = `The user has shared ${fileData.images.length === 1 ? "an image" : `${fileData.images.length} images`}. READ and analyze what's shown. If it's an email, document, or screenshot with text - extract and summarize the actual content. Be specific about what you see.`;
       const textWithInstruction = fullText
         ? `${imageInstruction}\n\nUser's message: ${fullText}`
         : imageInstruction;
