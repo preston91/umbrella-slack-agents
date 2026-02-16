@@ -200,7 +200,13 @@ function registerMentionHandler(app) {
     }
 
     // Make sure the current message is included
-    if (messages.length === 0 || messages[messages.length - 1].content !== fullText) {
+    // When we have images, ALWAYS replace the last message with multimodal content
+    // (the text-only version was already added to history, but we need the image version for Claude)
+    if (hasImages && messages.length > 0 && messages[messages.length - 1].content === fullText) {
+      // Replace the text-only message with multimodal content
+      messages[messages.length - 1].content = currentContent;
+      console.log("[DEBUG] Replaced last message with multimodal content");
+    } else if (messages.length === 0 || messages[messages.length - 1].content !== fullText) {
       messages.push({ role: "user", content: currentContent });
     }
 
