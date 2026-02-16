@@ -7,6 +7,41 @@ let gmail = null;
 let oauth2Client = null;
 
 /**
+ * Noise filter - skip newsletters, promos, automated notifications, and receipts.
+ * Matches against sender address and name (case-insensitive).
+ */
+const NOISE_SENDERS = [
+  // Newsletters & marketing
+  "seatgeek", "boardroom", "built in", "builtin.com", "substack",
+  "medium.com", "linkedin.com", "notifications@", "newsletter",
+  "marketing@", "promo@", "noreply@",
+  // Receipts & financial notifications
+  "apple cash", "cash@square.com", "venmo", "paypal",
+  "receipt@", "billing@", "invoice@",
+  // Automated service notifications
+  "godaddy", "vanta.com", "notify@", "alerts@",
+  "no-reply@", "donotreply@", "mailer-daemon",
+  // Social & entertainment
+  "facebookmail", "twitter.com", "instagram", "tiktok",
+];
+
+function isNoiseEmail(email) {
+  const from = (email.from || "").toLowerCase();
+  const labels = email.labels || [];
+
+  // Skip if Gmail already categorized as promo/social/updates
+  if (labels.includes("CATEGORY_PROMOTIONS") ||
+      labels.includes("CATEGORY_SOCIAL") ||
+      labels.includes("CATEGORY_UPDATES") ||
+      labels.includes("CATEGORY_FORUMS")) {
+    return true;
+  }
+
+  // Skip known noise senders
+  return NOISE_SENDERS.some((pattern) => from.includes(pattern));
+}
+
+/**
  * Initialize Gmail API with OAuth2 credentials
  * Required env vars: GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN
  */
@@ -47,22 +82,28 @@ function isGmailAvailable() {
  * @param {number} maxResults - Number of emails to fetch (default 20)
  * @param {string} query - Optional Gmail search query
  */
-async function getRecentEmails(maxResults = 20, query = "") {
+async function getRecentEmails(maxResults = 20, query = "", { filterNoise = true } = {}) {
   if (!gmail) return [];
 
   try {
+    // Fetch extra messages to account for filtered-out noise
+    const fetchCount = filterNoise ? maxResults * 2 : maxResults;
+
     const response = await gmail.users.messages.list({
       userId: "me",
-      maxResults,
-      q: query || "is:inbox",
+      maxResults: fetchCount,
+      q: query || "is:inbox category:primary",
     });
 
     const messages = response.data.messages || [];
     const emails = [];
 
-    for (const message of messages.slice(0, maxResults)) {
+    for (const message of messages) {
+      if (emails.length >= maxResults) break;
       const email = await getEmailDetails(message.id);
-      if (email) emails.push(email);
+      if (!email) continue;
+      if (filterNoise && isNoiseEmail(email)) continue;
+      emails.push(email);
     }
 
     return emails;
@@ -158,7 +199,7 @@ async function getRecentEmailsFromHours(hours = 24) {
   if (!gmail) return [];
 
   const afterDate = new Date(Date.now() - hours * 60 * 60 * 1000);
-  const query = `in:inbox after:${Math.floor(afterDate.getTime() / 1000)}`;
+  const query = `in:inbox category:primary after:${Math.floor(afterDate.getTime() / 1000)}`;
 
   return getRecentEmails(50, query);
 }
@@ -212,7 +253,7 @@ async function searchEmails(searchTerm, maxResults = 10) {
   if (!gmail) return [];
 
   const query = `${searchTerm} in:inbox OR in:sent`;
-  return getRecentEmails(maxResults, query);
+  return getRecentEmails(maxResults, query, { filterNoise: false });
 }
 
 /**

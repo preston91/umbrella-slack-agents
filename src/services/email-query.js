@@ -514,12 +514,12 @@ async function searchEmailContext(topic) {
  * to verify the connection is working
  */
 async function checkEmailAccessContext() {
-  // Fetch a few emails from inbox (no time filter) to verify access
-  const emails = await getRecentEmails(5, "in:inbox");
+  // Fetch a few emails from inbox (no time filter) to verify access - skip noise filter
+  const emails = await getRecentEmails(5, "in:inbox", { filterNoise: false });
 
   if (emails.length === 0) {
     // Try without inbox filter as a fallback
-    const allEmails = await getRecentEmails(5);
+    const allEmails = await getRecentEmails(5, "", { filterNoise: false });
 
     if (allEmails.length === 0) {
       return {
