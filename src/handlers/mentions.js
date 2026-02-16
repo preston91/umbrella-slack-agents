@@ -38,7 +38,7 @@ async function getAIResponse(agent, messages, options = {}) {
   if (hasFiles || hasMultimodalContent(messages)) {
     console.log(`[${agent.name}] Files detected - routing to Claude for vision (better at reading images)`);
     // Add image analysis priority to system prompt when files are present
-    const imageSystemAddition = `\n\nIMAGE ANALYSIS PRIORITY: When the user shares an image, carefully analyze and READ the actual visual content. If it's a screenshot of an email, document, or text - read it and extract the key information. Be confident about what you CAN see. Only note uncertainty for specific words or sections that are genuinely illegible. Do not default to "I can't read this" - make your best effort to extract the content.`;
+    const imageSystemAddition = `\n\nIMAGE READING RULES:\n1. NEVER say "I can't read this" or ask for a clearer image\n2. NEVER ask the user to copy/paste the text\n3. ALWAYS read and report what you see, even if some parts are unclear\n4. For emails/documents: extract sender, subject, and key points from the body\n5. If a word is unclear, make your best guess or skip it - don't stop reading\n6. Be specific and quote actual text from the image`;
     const fileAwarePrompt = systemPrompt + imageSystemAddition;
     // Claude is primary for vision - better at reading text in screenshots and less hallucination
     return askClaude(fileAwarePrompt, messages);
@@ -174,7 +174,7 @@ function registerMentionHandler(app) {
     if (fileData && fileData.images.length > 0) {
       // Multi-modal content with images for Claude/Gemini vision
       // Add explicit instruction to prioritize image analysis over conversation context
-      const imageInstruction = `The user has shared ${fileData.images.length === 1 ? "an image" : `${fileData.images.length} images`}. READ and analyze what's shown. If it's an email, document, or screenshot with text - extract and summarize the actual content. Be specific about what you see.`;
+      const imageInstruction = `READ THIS IMAGE NOW. Extract all visible text. For emails: state the sender, subject, and summarize the body content. Do NOT ask for a clearer image or suggest the user copy/paste - just read what's there.`;
       const textWithInstruction = fullText
         ? `${imageInstruction}\n\nUser's message: ${fullText}`
         : imageInstruction;
