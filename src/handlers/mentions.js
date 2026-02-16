@@ -38,7 +38,7 @@ async function getAIResponse(agent, messages, options = {}) {
   if (hasFiles || hasMultimodalContent(messages)) {
     console.log(`[${agent.name}] Files detected - routing to Claude for vision (better at reading images)`);
     // Add image analysis priority to system prompt when files are present
-    const imageSystemAddition = `\n\nIMAGE READING RULES:\n1. NEVER say "I can't read this" or ask for a clearer image\n2. NEVER ask the user to copy/paste the text\n3. ALWAYS read and report what you see, even if some parts are unclear\n4. For emails/documents: extract sender, subject, and key points from the body\n5. If a word is unclear, make your best guess or skip it - don't stop reading\n6. Be specific and quote actual text from the image`;
+    const imageSystemAddition = `\n\nCRITICAL IMAGE RULES:\n1. READ THE ACTUAL IMAGE - do not guess or make up content based on conversation context\n2. QUOTE the actual text you see - do not paraphrase or invent\n3. If you see an email, read the ACTUAL sender, subject, and body text from the image\n4. Do NOT use conversation history to fill in what you think the image says\n5. If the image contradicts prior context, trust the IMAGE not the context\n6. Be specific: "The email says [exact quote]" not "I think it says..."`;
     const fileAwarePrompt = systemPrompt + imageSystemAddition;
     // Claude is primary for vision - better at reading text in screenshots and less hallucination
     return askClaude(fileAwarePrompt, messages);
@@ -149,10 +149,11 @@ function registerMentionHandler(app) {
     const history = await getConversation(channelName);
     console.log(`[DEBUG] Conversation history: ${history.length} messages`);
 
-    // When images are shared, limit history to prevent old context from interfering
-    // with image analysis. The image should be the primary context.
+    // When images are shared, severely limit history to prevent hallucination from context
+    // The image should be the PRIMARY context - prior conversation can cause the model to
+    // "fill in" what it thinks the image says based on context instead of reading it
     const hasImages = fileData && fileData.images.length > 0;
-    const historyLimit = hasImages ? 5 : 20; // Less history when analyzing images
+    const historyLimit = hasImages ? 2 : 20; // Minimal history when analyzing images
 
     // Filter out any messages with empty content to avoid Claude API errors
     const messages = history
@@ -174,7 +175,7 @@ function registerMentionHandler(app) {
     if (fileData && fileData.images.length > 0) {
       // Multi-modal content with images for Claude/Gemini vision
       // Add explicit instruction to prioritize image analysis over conversation context
-      const imageInstruction = `READ THIS IMAGE NOW. Extract all visible text. For emails: state the sender, subject, and summarize the body content. Do NOT ask for a clearer image or suggest the user copy/paste - just read what's there.`;
+      const imageInstruction = `READ AND QUOTE THE ACTUAL TEXT IN THIS IMAGE. Do not guess based on conversation history. For emails: quote the actual sender name, recipient, subject line, and key sentences from the body. Use direct quotes like "The email says: [exact text]". Trust ONLY what you see in the image.`;
       const textWithInstruction = fullText
         ? `${imageInstruction}\n\nUser's message: ${fullText}`
         : imageInstruction;
@@ -191,6 +192,21 @@ function registerMentionHandler(app) {
       messages.push({ role: "user", content: currentContent });
     }
 
+    // Debug: Log what we're actually sending
+    if (hasImages) {
+      const lastMsg = messages[messages.length - 1];
+      if (Array.isArray(lastMsg.content)) {
+        console.log(`[DEBUG] Multimodal message structure: ${lastMsg.content.length} parts`);
+        lastMsg.content.forEach((part, i) => {
+          if (part.type === "text") {
+            console.log(`[DEBUG] Part ${i}: text (${part.text.length} chars)`);
+          } else if (part.type === "image") {
+            console.log(`[DEBUG] Part ${i}: image (${part.source?.media_type}, ${part.source?.data?.length || 0} base64 chars)`);
+          }
+        });
+      }
+    }
+
     // Get AI response with full conversation context
     // Pass hasFiles flag to route file requests directly to Gemini
     // Pass emailContext to inject email data for email queries
@@ -198,6 +214,14 @@ function registerMentionHandler(app) {
     if (hasFiles) {
       console.log(`[DEBUG] Sending to AI with ${fileData.images.length} images, ${fileData.texts.length} text files`);
       console.log(`[DEBUG] Image instruction included in message`);
+      // Log image details for debugging
+      if (fileData.images.length > 0) {
+        for (let i = 0; i < fileData.images.length; i++) {
+          const img = fileData.images[i];
+          const dataLen = img.source?.data?.length || 0;
+          console.log(`[DEBUG] Image ${i + 1}: type=${img.source?.media_type}, base64_length=${dataLen}`);
+        }
+      }
     }
     const result = await getAIResponse(agent, messages, { hasFiles, emailContext });
 
