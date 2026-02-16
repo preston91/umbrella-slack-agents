@@ -6,6 +6,14 @@ const pdfParse = require("pdf-parse");
 
 // Download file from Slack
 async function downloadFile(fileUrl, botToken) {
+  console.log(`[files] Downloading: ${fileUrl}`);
+  console.log(`[files] Token present: ${!!botToken}`);
+
+  if (!fileUrl) {
+    console.error("[files] No file URL provided");
+    return null;
+  }
+
   try {
     const response = await axios.get(fileUrl, {
       headers: {
@@ -13,9 +21,14 @@ async function downloadFile(fileUrl, botToken) {
       },
       responseType: "arraybuffer",
     });
+    console.log(`[files] Download success: ${response.data.byteLength} bytes`);
     return Buffer.from(response.data);
   } catch (error) {
-    console.error("Failed to download file:", error.message);
+    console.error(`[files] Failed to download: ${error.message}`);
+    if (error.response) {
+      console.error(`[files] Response status: ${error.response.status}`);
+      console.error(`[files] Response data: ${JSON.stringify(error.response.data)}`);
+    }
     return null;
   }
 }

@@ -110,8 +110,20 @@ function registerMentionHandler(app) {
     }
 
     console.log("[DEBUG] Final files array:", files);
+    console.log("[DEBUG] Files structure:", JSON.stringify(files, null, 2));
     const fileData = await processFiles(files, botToken);
     console.log("[DEBUG] processFiles result:", JSON.stringify(fileData, null, 2));
+
+    // Temporary debug: show what files were detected
+    if (files && files.length > 0) {
+      const fileNames = files.map(f => `${f.name} (${f.mimetype})`).join(", ");
+      console.log(`[DEBUG] Detected files: ${fileNames}`);
+      if (!fileData || fileData.images.length === 0) {
+        console.log("[DEBUG] WARNING: Files detected but no images processed!");
+      }
+    } else {
+      console.log("[DEBUG] No files detected in event or message history");
+    }
 
     // Build text content (include extracted file text)
     let fullText = text;
