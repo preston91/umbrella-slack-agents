@@ -37,11 +37,14 @@ async function getAIResponse(agent, messages, options = {}) {
   // and avoids the complexity of consensus synthesis with file content
   if (hasFiles || hasMultimodalContent(messages)) {
     console.log(`[${agent.name}] Files detected - routing directly to Gemini`);
+    // Add image analysis priority to system prompt when files are present
+    const imageSystemAddition = `\n\nIMAGE ANALYSIS PRIORITY: When the user shares an image, you must carefully analyze the actual visual content of the image and base your response on what you see. Do NOT rely on conversation history or prior context to describe image content - look at the actual image. If the image shows a document, email, or screenshot, read and describe the actual content shown in the image.`;
+    const fileAwarePrompt = systemPrompt + imageSystemAddition;
     if (isGeminiAvailable()) {
-      return askGemini(systemPrompt, messages);
+      return askGemini(fileAwarePrompt, messages);
     }
     console.log(`[${agent.name}] Gemini unavailable, falling back to Claude`);
-    return askClaude(systemPrompt, messages);
+    return askClaude(fileAwarePrompt, messages);
   }
 
   switch (provider) {
@@ -157,9 +160,14 @@ function registerMentionHandler(app) {
     // Build current message content (may include images for vision)
     let currentContent;
     if (fileData && fileData.images.length > 0) {
-      // Multi-modal content with images for Claude vision
+      // Multi-modal content with images for Claude/Gemini vision
+      // Add explicit instruction to prioritize image analysis over conversation context
+      const imageInstruction = `IMPORTANT: The user has shared ${fileData.images.length === 1 ? "an image" : `${fileData.images.length} images`}. You MUST carefully analyze the actual content shown in the image(s) before responding. Base your response on what you see IN THE IMAGE, not on previous conversation context or assumptions. If the image shows an email, read and describe the actual email content from the image.`;
+      const textWithInstruction = fullText
+        ? `${imageInstruction}\n\nUser's message: ${fullText}`
+        : imageInstruction;
       currentContent = [
-        { type: "text", text: fullText || "Please analyze these images:" },
+        { type: "text", text: textWithInstruction },
         ...fileData.images,
       ];
     } else {
