@@ -33,18 +33,14 @@ async function getAIResponse(agent, messages, options = {}) {
     console.log(`[${agent.name}] Injected email context (${emailContext.intent})`);
   }
 
-  // If there are files (images/PDFs), use Gemini directly - it handles multimodal better
-  // and avoids the complexity of consensus synthesis with file content
+  // If there are files (images/PDFs), use Claude directly - it has better vision capabilities
+  // and is less likely to hallucinate content from conversation history
   if (hasFiles || hasMultimodalContent(messages)) {
-    console.log(`[${agent.name}] Files detected - routing directly to Gemini`);
+    console.log(`[${agent.name}] Files detected - routing to Claude for vision (better at reading images)`);
     // Add image analysis priority to system prompt when files are present
     const imageSystemAddition = `\n\nIMAGE ANALYSIS PRIORITY: When the user shares an image, you must carefully analyze the actual visual content of the image and base your response on what you see. Do NOT rely on conversation history or prior context to describe image content - look at the actual image. If the image shows a document, email, or screenshot, read and describe the actual content shown in the image.\n\nCRITICAL - NO HALLUCINATION: If you cannot clearly read or see the content in the image, you MUST say "I'm having trouble reading this image clearly" rather than guessing or making up content. NEVER describe content that you don't actually see in the image. If the image is blurry, too small, or unclear, admit it.`;
     const fileAwarePrompt = systemPrompt + imageSystemAddition;
-    if (isGeminiAvailable()) {
-      // Use a more capable model for vision tasks - gemini-2.0-flash can struggle with detailed image analysis
-      return askGemini(fileAwarePrompt, messages, { model: "gemini-2.0-flash" });
-    }
-    console.log(`[${agent.name}] Gemini unavailable, falling back to Claude`);
+    // Claude is primary for vision - better at reading text in screenshots and less hallucination
     return askClaude(fileAwarePrompt, messages);
   }
 
