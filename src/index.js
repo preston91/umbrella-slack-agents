@@ -112,7 +112,7 @@ The goal: Give me leverage at the intersection of tech, culture, sports, and ent
 
     const contentResult = await askClaudeWithSearch(AGENTS.content.systemPrompt, contentPrompt);
     if (contentResult.success) {
-      await postToChannel("#content-signal", `*Motion Signal Briefing - 7am*\n\n${contentResult.text}`);
+      await postToChannel("#content-marketing", `*Motion Signal Briefing - 7am*\n\n${contentResult.text}`);
     }
 
     console.log("7am content briefing completed");
@@ -277,7 +277,7 @@ Keep it tight. I want signal, not homework.`;
 
     const contentAnglesResult = await askClaudeWithSearch(AGENTS.content.systemPrompt, contentAnglesPrompt);
     if (contentAnglesResult.success) {
-      await postToChannel("#content-signal", `*Content Angles - 9am*\n\n${contentAnglesResult.text}`);
+      await postToChannel("#content-marketing", `*Content Angles - 9am*\n\n${contentAnglesResult.text}`);
     }
 
     clearAll();
@@ -493,7 +493,7 @@ If you find something: one line on what it is, one line on why it matters for co
 
     const culturalPulseResult = await askClaudeWithSearch(AGENTS.content.systemPrompt, culturalPulsePrompt);
     if (culturalPulseResult.success) {
-      await postToChannel("#content-signal", `*Cultural Pulse - 12pm*\n\n${culturalPulseResult.text}`);
+      await postToChannel("#content-marketing", `*Cultural Pulse - 12pm*\n\n${culturalPulseResult.text}`);
     }
 
     console.log("12pm tasks completed");
@@ -797,7 +797,7 @@ If nothing hits, say "nothing worth posting tonight" - don't force it.`;
 
     const eveningContentResult = await askClaudeWithSearch(AGENTS.content.systemPrompt, eveningContentPrompt);
     if (eveningContentResult.success) {
-      await postToChannel("#content-signal", `*Evening Gems - 6pm*\n\n${eveningContentResult.text}`);
+      await postToChannel("#content-marketing", `*Evening Gems - 6pm*\n\n${eveningContentResult.text}`);
     }
 
     console.log("6pm - Evening tasks complete");
